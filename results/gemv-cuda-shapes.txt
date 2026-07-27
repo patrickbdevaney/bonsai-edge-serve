@@ -112,3 +112,28 @@ the 177.6 measured at one oversized shape:
 So the honest headroom from kernel work is about 1.8x, up from the 1.55x
 implied by the 256 MiB figure, and against the 244.7 GB/s machine limit
 the absolute ceiling is ~34 tok/s.
+
+WAVE QUANTIZATION AT SMALL N -- split-K is justified
+----------------------------------------------------
+v5 assigns one row per warp, 8 warps per block, so the grid is N/8
+blocks. Thor has 20 SMs and holds ~6 blocks of 256 threads each, i.e.
+~120 concurrent blocks. Small-N matrices therefore cannot fill the
+machine:
+
+  N       blocks   waves    v5 GB/s   % of large-N
+  512        64     0.53      96.7        46%
+  1024      128     1.07     127.9        60%
+  2048      256     2.13     176.4        83%
+  5120      640     5.33     212.2       100%
+
+At N=512 barely half the machine is occupied and throughput is 46% of
+what the same kernel achieves at N=5120.
+
+This matters for real layers, not just synthetic ones. Bonsai's
+full-attention layers have 4 KV heads x 256 head_dim = 1024-row K and V
+projections, which land squarely in the degraded region at ~60%.
+
+So splitting K across CTAs -- the one untried CUDA lever we had not
+justified -- is now justified, and specifically for the small-N
+projections rather than as a general optimization. The large matmuls
+(N >= 5120) are already at ~5 waves and need nothing.
