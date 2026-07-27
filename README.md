@@ -355,6 +355,42 @@ GiB) exist but are **plain dense Qwen3** -- no GDN, no recurrent state, no
 DSpark, 32-64K context. They are a simpler engine path and give zero GDN
 coverage, so they cannot be used to iterate on the 27B's kernels.
 
+## Phase 2 started: the decode kernels
+
+`kernels/` holds the batch-1 low-bit GEMV for all three backends, sharing
+one packed weight format (`kernels/common/bonsai_gemv.h`). See
+`kernels/README.md` for the design and full results.
+
+**CPU (ARM NEON) is measured and bit-exact** against a scalar reference.
+Whole-vector unpack + SDOT versus the per-element extract the current ARM
+path uses: **0.37 -> 5.78 GB/s on ternary (~16x)** and **0.03 -> 2.78
+GB/s on 1-bit (~90x)** single-threaded. Threaded best is 38.75 GB/s at
+12 threads, and 14 threads collapses to 19.01 -- independently
+reproducing the leave-cores-for-the-OS finding.
+
+Projected onto the real model that is **5.40 tok/s ternary against
+llama.cpp's tuned 3.18 (1.70x)** -- but **4.45 vs 4.85 (0.92x) on 1-bit,
+a real regression**. That is the predicted outcome, not a bug: SDOT
+retires 16 weights per instruction regardless of bit width, so a 1-bit
+kernel shaped like a 2-bit one moves half the bytes at the same
+weights/s. The fix is a lookup-table kernel, and it turns out to require
+a row-interleaved weight layout -- i.e. the one place the shared-format
+design may have to bend. Documented rather than rushed.
+
+**CUDA and Vulkan compile but are unvalidated on device.** The GPU is
+wedged (see below), so no performance claim is made for either.
+
+## Blocked: the GPU needs a reboot
+
+After the suspend/resume cycle, 201 processes are stuck in `D` state
+inside the NVIDIA UVM replayable-fault handler and `nvidia_uvm`'s
+refcount is pinned at 1272, so **any new CUDA or Vulkan context hangs** --
+including a trivial `cudaMemGetInfo` that worked before the suspend. The
+stuck processes are `rustdesk`, not this project's, and `nvidia-smi`
+still reports the device healthy at 0% util. Stopping the rustdesk
+service did not release them; D-state processes cannot be killed and the
+module cannot be unloaded at that refcount. A reboot clears it.
+
 ## What is not done, and why
 
 Being explicit so the tables above are not read as more than they are.

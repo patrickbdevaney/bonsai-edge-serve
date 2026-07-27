@@ -107,14 +107,41 @@ weights/s while moving half the bytes -- it is purely ALU-bound and gains
 nothing from being smaller. llama.cpp's Q1_0 path uses a lookup table,
 which retires more weights per instruction.
 
-The fix is known and is the next task: a T-MAC style **register-resident
-LUT** (`vqtbl1q`, g=4), where one TBL covers 16 lanes x 4 weights = 64
-weights per instruction against SDOT's 16. Published and independently
-measured at ~4.4x for 1-bit on this class of core. It is deliberately not
-half-implemented here: the table entries need int16 range (4 activations
-x +/-127 = +/-508) so a correct version needs a hi/lo split or a scaled
-table, and shipping an unvalidated approximation would break the
-bit-exactness bar every other kernel here meets.
+The fix is a T-MAC style **register-resident LUT** (`vqtbl1q`, g=4),
+published and independently measured at ~4.4x for 1-bit on this class of
+core. It is deliberately not half-implemented here, and the reason is
+structural rather than a matter of effort:
+
+1. **Table range.** For g=4 an entry is a signed sum of 4 activations,
+   range +/-508, so entries need int16. `vqtbl1q` returns bytes, so an
+   exact version needs a hi/lo split (two lookups, recombined as
+   `lo + 256*hi`) or a scaled table that gives up bit-exactness. The
+   split is fine -- 4 TBL per 128 weights is still 32 weights/TBL against
+   SDOT's 16 weights/instruction.
+
+2. **The blocker: a LUT indexes one table across 16 lanes, but each
+   activation group needs a *different* table.** Group `t` uses
+   activations `a[4t..4t+3]`, so a 128-weight block needs 32 distinct
+   tables. `vqtbl1q` applies one table to all 16 lanes. T-MAC resolves
+   this by making the 16 lanes **16 different output rows** at a fixed
+   activation group, not 16 different groups of one row -- which requires
+   the weights to be **row-interleaved**, a different packing from the
+   one CUDA and Vulkan use.
+
+So the 1-bit CPU win costs a CPU-specific weight layout, and therefore a
+decision the rest of the design has so far avoided: either the CPU
+backend repacks again at load (paying memory for a second copy, or CPU
+time to transform), or the shared format gains a row-interleaved variant
+that the GPU backends would have to tolerate. That is a real
+architectural choice and it should be made deliberately with the
+measurement in hand, not slipped in. Recommended next step: prototype the
+row-interleaved 1-bit LUT kernel standalone, measure it against the 2.78
+GB/s SDOT baseline, and only then decide whether the win justifies the
+second layout.
+
+Note this also reframes the "one format, three backends" claim honestly:
+it holds for the dot-product-shaped kernels (CUDA, Vulkan, CPU 2-bit),
+and the CPU 1-bit path is where it may have to bend.
 
 ## Building
 
