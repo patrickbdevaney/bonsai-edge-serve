@@ -91,6 +91,34 @@ several prose prompts, giving zero decode time and a sentinel 1e6 tok/s.
 the workload actually ran. `measure_power.sh` now rejects any run
 producing under 32 tokens.
 
+### L7. A "fix" that silently did nothing, then measured as a success
+
+Sequence: implemented the Vulkan q2_0 MMVQ integration, got degenerate
+output, saved a WIP patch, ran `git checkout -- ggml/src/ggml-vulkan/` to
+restore the fork, rebuilt, verified correct. Then applied an alignment
+fix with a Python `str.replace` script -- against the code I had just
+reverted.
+
+Every `replace` matched nothing and returned the string unchanged. The
+script printed "fixed". The build succeeded. The output was correct. The
+throughput was normal. **All four signals said success, and the
+integration was not there at all.** I was measuring the baseline and
+reported it as a working fix.
+
+Caught only by `grep -c q2_0_codes` returning 0 while writing the commit.
+
+**Generalizable, two parts.** `str.replace` is a silent no-op on a miss --
+use an assert, which the earlier version of that same script actually had
+and this one dropped. And after any revert, re-verify the edits are
+present before trusting a measurement: a clean build and plausible
+numbers are exactly what a reverted tree produces.
+
+The alignment analysis itself still stands and is the likely real bug: a
+Q2_0 block is 2 + 32 = 34 bytes, so only 2-byte aligned, and a `uint32_t`
+member is padded to a 36-byte stride that misreads every block. That is
+why Q4_0 (18 bytes) uses a packed16 view. It is now recorded as untested
+rather than as a fix.
+
 ### L6. A launch failure reported as a PASS
 
 At K=17408 the harness printed `v1 smem activations ... OK`. It never

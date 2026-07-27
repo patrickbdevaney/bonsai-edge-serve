@@ -120,6 +120,13 @@ All four are now open, and the path demonstrably dispatches: adding the
 registration changed the output. It changed it to **degenerate repetition
 of the prompt**, so the index arithmetic is wrong.
 
+**CORRECTION.** A follow-up "alignment fix" was applied by a script whose
+`replace` calls silently matched nothing, because the tree had already
+been reverted. It built, ran, and produced correct output and normal
+throughput -- all of which were the BASELINE. The integration was not
+present. See WIKI L7. The struct-alignment hypothesis below is therefore
+**untested**, not confirmed.
+
 **Where the error must be.** The standalone shader is validated
 (4.783e-06) and its extraction is byte-for-byte the same, so
 `unpack_gguf` is not the problem. What differs is the addressing:
@@ -128,12 +135,20 @@ of the prompt**, so the index arithmetic is wrong.
 data_a_packed32[ib_a / 4].qs[(ib_a % 4) * 2 + iqs]
 ```
 
-This assumes `ib_a` is a virtual block index in units of 32 quants and
-that `iqs` selects one of the two 16-quant halves. That was inferred from
-Q2_K, which calls `repack4(ib_a, iqs * 4)` and internally does
-`iqs_k = (ib % 8) * 8 + iqs` -- a scaling that does not obviously
-compose the way assumed. **The next attempt should instrument `iqs`
-directly rather than infer it**, e.g. by writing `ib_a` and `iqs` to the
+Reading the caller settles the index semantics and they were RIGHT:
+`a_block_idx = (ibi + col)/QUANT_K_Q8_1` counts 32-quant units, and
+`b_qs_idx = tid % (32 / K_PER_ITER)` is 0 or 1. So `ib_a / 4`,
+`(ib_a % 4) * 2 + iqs` is correct addressing.
+
+The remaining suspect is the **struct**, not the arithmetic. A Q2_0 block
+is 2 (fp16) + 32 = **34 bytes**, only 2-byte aligned, so a `uint32_t qs[]`
+member is padded to a 36-byte stride and misreads every block. Q4_0 (18
+bytes) uses `packed16` for exactly this reason. The fix is a
+`block_q2_0_packed16` with `uint16_t qs[16]`, assembling each word with
+`pack32(u16vec2(qs[wi], qs[wi+1]))`. **Untested -- see the CORRECTION
+above.**
+
+Superseded note: the next attempt should instrument `iqs`, e.g. by writing `ib_a` and `iqs` to the
 output buffer from a debug shader, which settles it in one run.
 
 Everything else -- extraction, bias correction, gate sites, size class --
