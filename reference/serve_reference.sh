@@ -36,10 +36,33 @@ case "$VARIANT" in
     *) echo "unknown variant: $VARIANT (want: ternary|onebit)" >&2; exit 2 ;;
 esac
 
+# BACKEND selects which build of the fork to serve from, so the same
+# harness drives CUDA, Vulkan and CPU runs. NGL is the offload count:
+# the CPU backend must run with 0 layers offloaded.
+BACKEND="${BACKEND:-cuda}"
+NGL=999
+NGLD=999
+
 case "$ENGINE" in
     fork)
-        BIN="$FORK_DIR/build-cuda/bin/llama-server"
-        [ -x "$BIN" ] || BIN="$FORK_DIR/build/bin/llama-server"
+        case "$BACKEND" in
+            cuda)
+                BIN="$FORK_DIR/build-cuda/bin/llama-server"
+                [ -x "$BIN" ] || BIN="$FORK_DIR/build/bin/llama-server"
+                ;;
+            vulkan)
+                BIN="$FORK_DIR/build-vulkan/bin/llama-server"
+                ;;
+            cpu)
+                # Reuses any build; the CPU backend is always present.
+                # -ngl 0 keeps every layer on the ARM NEON path.
+                BIN="$FORK_DIR/build-cpu/bin/llama-server"
+                [ -x "$BIN" ] || BIN="$FORK_DIR/build/bin/llama-server"
+                NGL=0
+                NGLD=0
+                ;;
+            *) echo "unknown backend: $BACKEND (want: cuda|vulkan|cpu)" >&2; exit 2 ;;
+        esac
         ;;
     upstream)
         # Q1_0 is merged upstream; ternary Q2_0 is fork-only.
@@ -59,7 +82,7 @@ esac
 # Benchmarks and trace capture override temperature per request.
 ARGS=(
     -m "$MODEL"
-    -ngl 999
+    -ngl "$NGL"
     -fa on
     -c "$CTX"
     -np 1
@@ -72,7 +95,7 @@ if [ "$MODE" = "dspark" ]; then
         -md "$DRAFT"
         --spec-type draft-dspark
         --spec-draft-n-max "$DRAFT_N_MAX"
-        -ngld 999
+        -ngld "$NGLD"
     )
 elif [ "$MODE" != "native" ]; then
     echo "unknown mode: $MODE (want: native|dspark)" >&2; exit 2
@@ -86,5 +109,5 @@ if [ -n "${EXTRA_ARGS:-}" ]; then
 fi
 
 echo "==> $BIN"
-echo "==> variant=$VARIANT mode=$MODE engine=$ENGINE port=$PORT ctx=$CTX"
+echo "==> variant=$VARIANT mode=$MODE engine=$ENGINE backend=$BACKEND ngl=$NGL port=$PORT ctx=$CTX"
 exec "$BIN" "${ARGS[@]}"

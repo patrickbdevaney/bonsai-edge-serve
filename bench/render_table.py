@@ -50,9 +50,14 @@ def main():
     if not runs:
         sys.exit("no usable result files")
 
-    print("| Variant | Mode | Workload | tok/s | TTFT (s) | Prefill tok/s | "
-          "Acceptance | Resident |")
-    print("| :-- | :-- | :-- | --: | --: | --: | --: | --: |")
+    # Filenames are <device>-<variant>-<mode>, where device may carry a
+    # backend suffix (thor.vulkan). Only show the backend column when more
+    # than one backend is present.
+    multi = len({d for d, _, _ in runs}) > 1
+    head = "| Device " if multi else ""
+    print(head + "| Variant | Mode | Workload | tok/s | TTFT (s) | "
+          "Prefill tok/s | Acceptance |")
+    print(("| :-- " if multi else "") + "| :-- | :-- | :-- | --: | --: | --: | --: |")
 
     order = [("ternary", "native"), ("ternary", "dspark"),
              ("onebit", "native"), ("onebit", "dspark")]
@@ -60,9 +65,6 @@ def main():
             runs, key=lambda k: (k[0], order.index((k[1], k[2]))
                                  if (k[1], k[2]) in order else 99)):
         obj = runs[(device, variant, mode)]
-        # Resident memory is the host-side delta; on Jetson, CPU and GPU
-        # share one pool and nvidia-smi reports nothing usable.
-        mem = obj.get("host_mem_mib_before")
         for wl in ("code", "prose"):
             w = obj.get("workloads", {}).get(wl)
             if not w:
@@ -70,20 +72,22 @@ def main():
             s = w["summary"]
             acc = s.get("acceptance_pooled")
             acc_s = f"{acc*100:.1f}%" if acc is not None else "n/a"
-            print(f"| {VARIANT_LABEL.get(variant, variant)} "
+            lead = f"| {device} " if multi else ""
+            print(lead + f"| {VARIANT_LABEL.get(variant, variant)} "
                   f"| {MODE_LABEL.get(mode, mode)} | {wl} "
                   f"| {fmt(s.get('decode_tok_s_median'), '.2f')} "
                   f"| {fmt(s.get('ttft_s_median'), '.3f')} "
                   f"| {fmt(s.get('prefill_tok_s_median'), '.1f')} "
-                  f"| {acc_s} "
-                  f"| {fmt(mem, '.0f') if mem is None else f'{mem/1024:.1f} GiB'} |")
+                  f"| {acc_s} |")
 
     if not args.speedup:
         return
 
     print()
-    print("| Variant | Workload | Native tok/s | DSpark tok/s | Speedup | Acceptance |")
-    print("| :-- | :-- | --: | --: | --: | --: |")
+    lead_h = "| Device " if multi else ""
+    print(lead_h + "| Variant | Workload | Native tok/s | DSpark tok/s | "
+          "Speedup | Acceptance |")
+    print(("| :-- " if multi else "") + "| :-- | :-- | --: | --: | --: | --: |")
     devices = sorted({k[0] for k in runs})
     for device in devices:
         for variant in ("ternary", "onebit"):
@@ -101,8 +105,10 @@ def main():
                 acc = sw["summary"].get("acceptance_pooled")
                 speed = (d / n) if (n and d) else None
                 # A speedup below 1.00x is a real, reportable outcome for
-                # this model family, not an error -- see README.
-                print(f"| {VARIANT_LABEL.get(variant, variant)} | {wl} "
+                # this model family and for the Vulkan backend, not an
+                # error -- see README.
+                lead = f"| {device} " if multi else ""
+                print(lead + f"| {VARIANT_LABEL.get(variant, variant)} | {wl} "
                       f"| {fmt(n, '.2f')} | {fmt(d, '.2f')} "
                       f"| {fmt(speed, '.2f')}x "
                       f"| {fmt(acc*100 if acc is not None else None, '.1f')}% |")

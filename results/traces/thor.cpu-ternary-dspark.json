@@ -1,0 +1,6025 @@
+{
+  "label": "thor.cpu-ternary-dspark",
+  "url": "http://127.0.0.1:8080",
+  "n_predict": 64,
+  "n_probs": 5,
+  "unix_time": 1785130026.202251,
+  "traces": {
+    "code/py-binsearch": {
+      "content": "    low = 0\n    high = len(arr) - 1\n    while low <= high:\n        mid = (low + high) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            low = mid + 1",
+      "tokens": [
+        {
+          "tok": "   ",
+          "logprob": -0.041433896869421005,
+          "top": [
+            {
+              "tok": "   ",
+              "logprob": -0.041433896869421005,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -5.018801212310791,
+              "prob": null
+            },
+            {
+              "tok": "    \n",
+              "logprob": -5.198113918304443,
+              "prob": null
+            },
+            {
+              "tok": "\t",
+              "logprob": -5.352702617645264,
+              "prob": null
+            },
+            {
+              "tok": "       ",
+              "logprob": -6.311446666717529,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " low",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "0",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " high",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " len",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(arr",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " -",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " while",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " low",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " <=",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " high",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " mid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "low",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " +",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " high",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " //",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "2",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " if",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " arr",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "[mid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "]",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ==",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " target",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "           ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " return",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " mid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " elif",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " arr",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "[mid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "]",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " <",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " target",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "           ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " low",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " mid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " +",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": -0.0013501814100891352,
+          "top": [
+            {
+              "tok": "1",
+              "logprob": -0.0013501814100891352,
+              "prob": null
+            },
+            {
+              "tok": "",
+              "logprob": -7.328914642333984,
+              "prob": null
+            },
+            {
+              "tok": "\n",
+              "logprob": -8.696020126342773,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -8.713626861572266,
+              "prob": null
+            },
+            {
+              "tok": "2",
+              "logprob": -8.822456359863281,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 34,
+        "predicted_n": 64,
+        "decode_tok_s": 2.7473803513710586,
+        "prefill_tok_s": 4.082863393755309,
+        "wall_s": 31.79627956100012
+      },
+      "dspark": {
+        "draft_n": 56,
+        "draft_n_accepted": 48,
+        "acceptance": 0.8571428571428571
+      }
+    },
+    "code/py-lru": {
+      "content": "        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key):\n        if key not in self.cache:\n            return -1\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key, value):\n        if key",
+      "tokens": [
+        {
+          "tok": "       ",
+          "logprob": -0.00519759813323617,
+          "top": [
+            {
+              "tok": "       ",
+              "logprob": -0.00519759813323617,
+              "prob": null
+            },
+            {
+              "tok": "   ",
+              "logprob": -6.880178451538086,
+              "prob": null
+            },
+            {
+              "tok": "     ",
+              "logprob": -7.0944976806640625,
+              "prob": null
+            },
+            {
+              "tok": "        \n",
+              "logprob": -7.114811897277832,
+              "prob": null
+            },
+            {
+              "tok": "      ",
+              "logprob": -7.658176422119141,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".capacity",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " capacity",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".cache",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " OrderedDict",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "()",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " def",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " get",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "):",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " if",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " not",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " in",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".cache",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "           ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " return",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " -",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".cache",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".move",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_to",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_end",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " return",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".cache",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "[key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "]",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " def",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " put",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(self",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "):",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " if",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " key",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 37,
+        "predicted_n": 64,
+        "decode_tok_s": 2.533683039656376,
+        "prefill_tok_s": 18.656678788465534,
+        "wall_s": 27.37026292399969
+      },
+      "dspark": {
+        "draft_n": 62,
+        "draft_n_accepted": 47,
+        "acceptance": 0.7580645161290323
+      }
+    },
+    "code/c-matmul": {
+      "content": "    size_t i, j, k;\n    float tmp;\n\n    for (i = 0; i < M; i += block)\n        for (j = 0; j < N; j += block)\n            for (k = 0; k < K; k += block",
+      "tokens": [
+        {
+          "tok": "   ",
+          "logprob": -0.23722819983959198,
+          "top": [
+            {
+              "tok": "   ",
+              "logprob": -0.23722819983959198,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -2.0118367671966553,
+              "prob": null
+            },
+            {
+              "tok": "size",
+              "logprob": -3.749047040939331,
+              "prob": null
+            },
+            {
+              "tok": "  ",
+              "logprob": -4.7436017990112305,
+              "prob": null
+            },
+            {
+              "tok": "/*",
+              "logprob": -4.811644554138184,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " size",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_t",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " i",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " j",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " k",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " float",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " tmp",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " for",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "i",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "0",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " i",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " <",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " M",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " i",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " +=",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " block",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " for",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "j",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "0",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " j",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " <",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " N",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " j",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " +=",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " block",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "           ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " for",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "k",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "0",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " k",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " <",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " K",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " k",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " +=",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " block",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 80,
+        "predicted_n": 64,
+        "decode_tok_s": 2.3750902024003624,
+        "prefill_tok_s": 40.97957577943153,
+        "wall_s": 29.028592629998457
+      },
+      "dspark": {
+        "draft_n": 67,
+        "draft_n_accepted": 46,
+        "acceptance": 0.6865671641791045
+      }
+    },
+    "code/cuda-reduce": {
+      "content": "    extern __shared__ float sdata[];\n    int tid = threadIdx.x;\n    int gid = blockIdx.x * blockDim.x + tid;\n\n    // Load input into shared memory\n    if (gid < n)\n        sdata[tid] = in[gid];\n    else\n        s",
+      "tokens": [
+        {
+          "tok": "   ",
+          "logprob": -0.08517983555793762,
+          "top": [
+            {
+              "tok": "   ",
+              "logprob": -0.08517983555793762,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -2.9232258796691895,
+              "prob": null
+            },
+            {
+              "tok": "\t",
+              "logprob": -4.697618007659912,
+              "prob": null
+            },
+            {
+              "tok": "\tconst",
+              "logprob": -5.954934597015381,
+              "prob": null
+            },
+            {
+              "tok": "       ",
+              "logprob": -6.3057637214660645,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " extern",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " __",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "shared",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "__",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " float",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "data",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "[]",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " int",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " tid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " threadIdx",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".x",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " int",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " gid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " blockIdx",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".x",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " blockDim",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".x",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " +",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " tid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ";",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " //",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Load",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " input",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " into",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " shared",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " memory",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " if",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "gid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " <",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "data",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "[tid",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "]",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " in",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "[g",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "id",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "];",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " else",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " s",
+          "logprob": -0.0033722093794494867,
+          "top": [
+            {
+              "tok": " s",
+              "logprob": -0.0033722093794494867,
+              "prob": null
+            },
+            {
+              "tok": " tree",
+              "logprob": -7.00684928894043,
+              "prob": null
+            },
+            {
+              "tok": " S",
+              "logprob": -7.712996482849121,
+              "prob": null
+            },
+            {
+              "tok": " sh",
+              "logprob": -8.693221092224121,
+              "prob": null
+            },
+            {
+              "tok": " //",
+              "logprob": -8.826793670654297,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 63,
+        "predicted_n": 64,
+        "decode_tok_s": 1.6313602498428221,
+        "prefill_tok_s": 31.42392268318401,
+        "wall_s": 41.38038646500354
+      },
+      "dspark": {
+        "draft_n": 96,
+        "draft_n_accepted": 38,
+        "acceptance": 0.3958333333333333
+      }
+    },
+    "code/rust-parser": {
+      "content": "    Num(f64),\n    Plus,\n    Minus,\n    Mul,\n    Div,\n    LParen,\n    RParen,\n    Eof,\n}\n\nstruct Lexer {\n    input: Vec<u8>,\n    pos: usize,\n}\n\nimpl Lexer {",
+      "tokens": [
+        {
+          "tok": "   ",
+          "logprob": -0.08368095755577087,
+          "top": [
+            {
+              "tok": "   ",
+              "logprob": -0.08368095755577087,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -3.859567403793335,
+              "prob": null
+            },
+            {
+              "tok": " Lit",
+              "logprob": -5.220396041870117,
+              "prob": null
+            },
+            {
+              "tok": "Add",
+              "logprob": -5.486026763916016,
+              "prob": null
+            },
+            {
+              "tok": "\t",
+              "logprob": -5.61099910736084,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " Num",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(f",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "6",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "4",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "),",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Plus",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Min",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "us",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Mul",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Div",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " LP",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "aren",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " RP",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "aren",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " E",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "}",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "struct",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Lexer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " {",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " input",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Vec",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "<u",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "8",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ">,",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " pos",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " usize",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "}",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "impl",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Lexer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " {",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 41,
+        "predicted_n": 64,
+        "decode_tok_s": 1.7516488215618335,
+        "prefill_tok_s": 21.0380588747512,
+        "wall_s": 38.61232500200276
+      },
+      "dspark": {
+        "draft_n": 89,
+        "draft_n_accepted": 40,
+        "acceptance": 0.449438202247191
+      }
+    },
+    "code/go-worker": {
+      "content": "// Job represents a unit of work.\ntype Job struct {\n\tID       int\n\tPayload  interface{}\n\t// Result is filled by the worker after processing.\n\tResult interface{}\n}\n\n// WorkerPool manages a fixed number of workers.\ntype WorkerPool struct {\n\tworkers int\n\tj",
+      "tokens": [
+        {
+          "tok": "//",
+          "logprob": -0.12387844920158386,
+          "top": [
+            {
+              "tok": "//",
+              "logprob": -0.12387844920158386,
+              "prob": null
+            },
+            {
+              "tok": "type",
+              "logprob": -2.5990219116210938,
+              "prob": null
+            },
+            {
+              "tok": "func",
+              "logprob": -4.271688461303711,
+              "prob": null
+            },
+            {
+              "tok": "var",
+              "logprob": -4.745055198669434,
+              "prob": null
+            },
+            {
+              "tok": "\t",
+              "logprob": -5.107179641723633,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " Job",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " represents",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " unit",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " work",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "type",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Job",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " struct",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " {",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\tID",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "      ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " int",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\tP",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ayload",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " interface",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "{}",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\t",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "//",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Result",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " filled",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " by",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " worker",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " after",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " processing",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\tResult",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " interface",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "{}",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "}",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "//",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Worker",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Pool",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " manages",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " fixed",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " number",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " workers",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "type",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Worker",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Pool",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " struct",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " {",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\t",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "workers",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " int",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\tj",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 42,
+        "predicted_n": 64,
+        "decode_tok_s": 1.466001624192362,
+        "prefill_tok_s": 20.993124751643837,
+        "wall_s": 45.7847602039983
+      },
+      "dspark": {
+        "draft_n": 107,
+        "draft_n_accepted": 35,
+        "acceptance": 0.32710280373831774
+      }
+    },
+    "code/sql-window": {
+      "content": "    customer_id,\n    order_id,\n    order_amount,\n    SUM(order_amount) OVER (\n        PARTITION BY customer_id\n        ORDER BY order_id\n    ) AS running_total,\n    RANK() OVER (\n        PARTITION BY customer_id\n        ORDER BY order_amount DESC\n",
+      "tokens": [
+        {
+          "tok": "   ",
+          "logprob": -0.5498873591423035,
+          "top": [
+            {
+              "tok": "   ",
+              "logprob": -0.5498873591423035,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -1.3151212930679321,
+              "prob": null
+            },
+            {
+              "tok": "customer",
+              "logprob": -3.9505867958068848,
+              "prob": null
+            },
+            {
+              "tok": "\t",
+              "logprob": -4.135473728179932,
+              "prob": null
+            },
+            {
+              "tok": "c",
+              "logprob": -4.250283718109131,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " customer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_id",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " order",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_id",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " order",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_amount",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " SUM",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(order",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_amount",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ")",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " OVER",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " PART",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ITION",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " BY",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " customer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_id",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ORDER",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " BY",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " order",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_id",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " )",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " AS",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " running",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_total",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " R",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ANK",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "()",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " OVER",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " PART",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ITION",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " BY",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " customer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_id",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "       ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ORDER",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " BY",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " order",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "_amount",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " DESC",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": -0.024077309295535088,
+          "top": [
+            {
+              "tok": "\n",
+              "logprob": -0.024077309295535088,
+              "prob": null
+            },
+            {
+              "tok": " NULL",
+              "logprob": -4.2864580154418945,
+              "prob": null
+            },
+            {
+              "tok": ",",
+              "logprob": -4.9107465744018555,
+              "prob": null
+            },
+            {
+              "tok": " ",
+              "logprob": -7.605449676513672,
+              "prob": null
+            },
+            {
+              "tok": " --",
+              "logprob": -7.993694305419922,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 30,
+        "predicted_n": 64,
+        "decode_tok_s": 2.5427003819731917,
+        "prefill_tok_s": 4.023710923731364,
+        "wall_s": 32.770052405998285
+      },
+      "dspark": {
+        "draft_n": 60,
+        "draft_n_accepted": 47,
+        "acceptance": 0.7833333333333333
+      }
+    },
+    "code/ts-react-hook": {
+      "content": "  const [debouncedValue, setDebouncedValue] = useState<T>(value);\n\n  useEffect(() => {\n    const timer = setTimeout(() => {\n      setDebouncedValue(value);\n    }, delayMs);\n\n    return () => clearTimeout(timer);\n  }, [value, delayMs]);",
+      "tokens": [
+        {
+          "tok": " ",
+          "logprob": -0.0814710184931755,
+          "top": [
+            {
+              "tok": " ",
+              "logprob": -0.0814710184931755,
+              "prob": null
+            },
+            {
+              "tok": "   ",
+              "logprob": -3.3296399116516113,
+              "prob": null
+            },
+            {
+              "tok": "\tconst",
+              "logprob": -4.073618412017822,
+              "prob": null
+            },
+            {
+              "tok": "const",
+              "logprob": -4.506161212921143,
+              "prob": null
+            },
+            {
+              "tok": "\t",
+              "logprob": -5.374149799346924,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " const",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " [",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "deb",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ounced",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " set",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Deb",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ounced",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "]",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " useState",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "<T",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ">(",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ");",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " useEffect",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(()",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =>",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " {",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " const",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " timer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " setTimeout",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(()",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =>",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " {",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "     ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " set",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Deb",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ounced",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ");",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " },",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " delay",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Ms",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ");",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " return",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ()",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " =>",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " clearTimeout",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "(timer",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ");",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " },",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " [",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " delay",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Ms",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "]);",
+          "logprob": -0.0014150612987577915,
+          "top": [
+            {
+              "tok": "]);",
+              "logprob": -0.0014150612987577915,
+              "prob": null
+            },
+            {
+              "tok": ",",
+              "logprob": -7.046990394592285,
+              "prob": null
+            },
+            {
+              "tok": "])",
+              "logprob": -8.698486328125,
+              "prob": null
+            },
+            {
+              "tok": "]",
+              "logprob": -8.8866605758667,
+              "prob": null
+            },
+            {
+              "tok": " ]);",
+              "logprob": -9.864028930664062,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 57,
+        "predicted_n": 64,
+        "decode_tok_s": 2.4415130773734948,
+        "prefill_tok_s": 28.762704158431028,
+        "wall_s": 28.33992104400386
+      },
+      "dspark": {
+        "draft_n": 64,
+        "draft_n_accepted": 46,
+        "acceptance": 0.71875
+      }
+    },
+    "prose/coastal-town": {
+      "content": " The same weathered houses, the same narrow streets, the same salty breeze that carried the scent of the sea. But this time, something was different. The silence was heavier, the air felt charged with an unspoken tension.\nShe had returned to the village to escape the noise of the city, to find sol",
+      "tokens": [
+        {
+          "tok": " The",
+          "logprob": -1.4727246761322021,
+          "top": [
+            {
+              "tok": " The",
+              "logprob": -1.4727246761322021,
+              "prob": null
+            },
+            {
+              "tok": " She",
+              "logprob": -2.213810682296753,
+              "prob": null
+            },
+            {
+              "tok": "\n",
+              "logprob": -2.2781360149383545,
+              "prob": null
+            },
+            {
+              "tok": "\n\n",
+              "logprob": -2.9579665660858154,
+              "prob": null
+            },
+            {
+              "tok": " It",
+              "logprob": -3.0287959575653076,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": " same",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " weather",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ed",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " houses",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " same",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " narrow",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " streets",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " same",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " salty",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " breeze",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " that",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " carried",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " scent",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " sea",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " But",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " this",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " time",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " something",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " was",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " different",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " silence",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " was",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " heavier",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " air",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " felt",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " charged",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " with",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " an",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " un",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "spoken",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " tension",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "She",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " had",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " returned",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " to",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " village",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " to",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " escape",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " noise",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " city",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " to",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " find",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " sol",
+          "logprob": -0.7509459853172302,
+          "top": [
+            {
+              "tok": " sol",
+              "logprob": -0.7509459853172302,
+              "prob": null
+            },
+            {
+              "tok": " peace",
+              "logprob": -0.9302939176559448,
+              "prob": null
+            },
+            {
+              "tok": " some",
+              "logprob": -3.467271566390991,
+              "prob": null
+            },
+            {
+              "tok": " a",
+              "logprob": -3.49831485748291,
+              "prob": null
+            },
+            {
+              "tok": " solitude",
+              "logprob": -3.9801368713378906,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 24,
+        "predicted_n": 64,
+        "decode_tok_s": 1.1611573770840984,
+        "prefill_tok_s": 3.8969060514404585,
+        "wall_s": 61.42198535300122
+      },
+      "dspark": {
+        "draft_n": 136,
+        "draft_n_accepted": 28,
+        "acceptance": 0.20588235294117646
+      }
+    },
+    "prose/essay-attention": {
+      "content": "\n\nThe attention economy is a new economic paradigm in which the primary currency is not money, but attention. In this economy, the value of a product or service is determined by how much attention it captures and retains.\n\nThe attention economy is a new economic paradigm in where the primary currency is not money, but attention.",
+      "tokens": [
+        {
+          "tok": "\n\n",
+          "logprob": -1.9641064405441284,
+          "top": [
+            {
+              "tok": "\n\n",
+              "logprob": -1.9641064405441284,
+              "prob": null
+            },
+            {
+              "tok": "\n",
+              "logprob": -2.0924127101898193,
+              "prob": null
+            },
+            {
+              "tok": " This",
+              "logprob": -2.369601011276245,
+              "prob": null
+            },
+            {
+              "tok": " In",
+              "logprob": -2.559401273727417,
+              "prob": null
+            },
+            {
+              "tok": " The",
+              "logprob": -2.622124433517456,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " attention",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " economy",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " new",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " economic",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " paradigm",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " in",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " which",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " primary",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " currency",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " not",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " money",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " but",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " attention",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " In",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " this",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " economy",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " value",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " product",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " or",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " service",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " determined",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " by",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " how",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " much",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " attention",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " it",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " captures",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " retains",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " attention",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " economy",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " new",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " economic",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " paradigm",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " in",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " where",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " primary",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " currency",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " not",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " money",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " but",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " attention",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 26,
+        "predicted_n": 64,
+        "decode_tok_s": 1.471938346390423,
+        "prefill_tok_s": 3.9301741082245996,
+        "wall_s": 50.2211996900005
+      },
+      "dspark": {
+        "draft_n": 108,
+        "draft_n_accepted": 36,
+        "acceptance": 0.3333333333333333
+      }
+    },
+    "prose/history-canal": {
+      "content": "<think>\n\n</think>\n\nThe construction of the Erie Canal, completed in 1825, fundamentally transformed the economic landscape of the American Northeast by drastically reducing transportation costs and integrating regional markets. Before the canal, moving goods between the Great Lakes and the Atlantic coast relied on arduous overland routes or seasonal river travel",
+      "tokens": [
+        {
+          "tok": "<think>",
+          "logprob": -0.0010319310240447521,
+          "top": [
+            {
+              "tok": "<think>",
+              "logprob": -0.0010319310240447521,
+              "prob": null
+            },
+            {
+              "tok": "The",
+              "logprob": -8.094024658203125,
+              "prob": null
+            },
+            {
+              "tok": "**",
+              "logprob": -8.44117546081543,
+              "prob": null
+            },
+            {
+              "tok": "",
+              "logprob": -9.75384521484375,
+              "prob": null
+            },
+            {
+              "tok": "This",
+              "logprob": -9.80390453338623,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "</think>",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " construction",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Erie",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Canal",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " completed",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " in",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "8",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "2",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "5",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " fundamentally",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " transformed",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " economic",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " landscape",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " American",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Northeast",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " by",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " drastically",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " reducing",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " transportation",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " costs",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " integrating",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " regional",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " markets",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Before",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " canal",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " moving",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " goods",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " between",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Great",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Lakes",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Atlantic",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " coast",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " relied",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " on",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ar",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "du",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ous",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " over",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "land",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " routes",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " or",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " seasonal",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " river",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " travel",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 23,
+        "predicted_n": 64,
+        "decode_tok_s": 1.233296658816284,
+        "prefill_tok_s": 3.825275390722776,
+        "wall_s": 58.03296554100234
+      },
+      "dspark": {
+        "draft_n": 126,
+        "draft_n_accepted": 30,
+        "acceptance": 0.23809523809523808
+      }
+    },
+    "prose/letter-resign": {
+      "content": "<think>\nHere's a thinking thinking sequence\n\n1.  **Deconstruct the user's request:**\n    *   Goal: Write a letter of resignation from a research position.\n    *   Tone: Gracious.\n    *   Key action: Thank colleagues.\n    *   Constraint: Do not disclose",
+      "tokens": [
+        {
+          "tok": "<think>",
+          "logprob": -0.001989434938877821,
+          "top": [
+            {
+              "tok": "<think>",
+              "logprob": -0.001989434938877821,
+              "prob": null
+            },
+            {
+              "tok": "</think>",
+              "logprob": -8.236885070800781,
+              "prob": null
+            },
+            {
+              "tok": "**",
+              "logprob": -8.280920028686523,
+              "prob": null
+            },
+            {
+              "tok": "Here",
+              "logprob": -8.384801864624023,
+              "prob": null
+            },
+            {
+              "tok": "The",
+              "logprob": -8.531573295593262,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Here",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "'s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " thinking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " thinking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " sequence",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " **",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "De",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "construct",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " user",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "'s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " request",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":**",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Goal",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Write",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " letter",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " resignation",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " from",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " research",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " position",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Tone",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Gr",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "acious",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " action",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Thank",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " colleagues",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Constraint",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Do",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " not",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " disclose",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 21,
+        "predicted_n": 64,
+        "decode_tok_s": 2.4517104032010146,
+        "prefill_tok_s": 3.766858710690363,
+        "wall_s": 31.805394871997123
+      },
+      "dspark": {
+        "draft_n": 63,
+        "draft_n_accepted": 47,
+        "acceptance": 0.746031746031746
+      }
+    },
+    "prose/review-restaurant": {
+      "content": "<think>\n\nHere's a thinking thinking sequence\n\n1.  **Deconstruct the user's request:**\n    *   Topic: Restaurant review of a new bistro.\n    *   Tone: Thoughtful, ambivalent.\n    *   Key points: Food is right (good), atmosphere is wrong (bad",
+      "tokens": [
+        {
+          "tok": "<think>",
+          "logprob": -0.05743168666958809,
+          "top": [
+            {
+              "tok": "<think>",
+              "logprob": -0.05743168666958809,
+              "prob": null
+            },
+            {
+              "tok": "The",
+              "logprob": -4.407628536224365,
+              "prob": null
+            },
+            {
+              "tok": "**",
+              "logprob": -5.368900775909424,
+              "prob": null
+            },
+            {
+              "tok": "#",
+              "logprob": -5.7047438621521,
+              "prob": null
+            },
+            {
+              "tok": "Here",
+              "logprob": -6.141564846038818,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Here",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "'s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " thinking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " thinking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " sequence",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " **",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "De",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "construct",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " user",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "'s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " request",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":**",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Topic",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Restaurant",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " review",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " new",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " b",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "istro",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Tone",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Thought",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ful",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " amb",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ivalent",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " points",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Food",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " right",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "good",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "),",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " atmosphere",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " wrong",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " (",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "bad",
+          "logprob": 0.0,
+          "top": []
+        }
+      ],
+      "timings": {
+        "prompt_n": 23,
+        "predicted_n": 64,
+        "decode_tok_s": 2.460725475698606,
+        "prefill_tok_s": 3.831476982735198,
+        "wall_s": 32.137496946998
+      },
+      "dspark": {
+        "draft_n": 63,
+        "draft_n_accepted": 47,
+        "acceptance": 0.746031746031746
+      }
+    },
+    "prose/philosophy-memory": {
+      "content": "\n\n\u2014 Elizabeth Gilbert\n\nThe human brain is a remarkable and complex organ. It is the seat of our consciousness, our emotions, and our memories. But it is also a fallible and malleable organ, one that is constantly changing and adapting to our experiences.\n\nOne of the most fascinating aspects of the brain",
+      "tokens": [
+        {
+          "tok": "\n\n",
+          "logprob": -1.6150517463684082,
+          "top": [
+            {
+              "tok": "\n\n",
+              "logprob": -1.6150517463684082,
+              "prob": null
+            },
+            {
+              "tok": "\n",
+              "logprob": -1.718711256980896,
+              "prob": null
+            },
+            {
+              "tok": " The",
+              "logprob": -2.992525577545166,
+              "prob": null
+            },
+            {
+              "tok": " \u2014",
+              "logprob": -3.2780802249908447,
+              "prob": null
+            },
+            {
+              "tok": " Memory",
+              "logprob": -3.3818819522857666,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "\u2014",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Elizabeth",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Gilbert",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " human",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " brain",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " remarkable",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " complex",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " organ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " It",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " seat",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " our",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " consciousness",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " our",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " emotions",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " our",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " memories",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " But",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " it",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " also",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " fall",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "ible",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " m",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "alle",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "able",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " organ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " one",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " that",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " is",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " constantly",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " changing",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " and",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " adapting",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " to",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " our",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " experiences",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "One",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " most",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " fascinating",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " aspects",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " brain",
+          "logprob": -0.26474109292030334,
+          "top": [
+            {
+              "tok": " brain",
+              "logprob": -0.26474109292030334,
+              "prob": null
+            },
+            {
+              "tok": " human",
+              "logprob": -1.5157748460769653,
+              "prob": null
+            },
+            {
+              "tok": " mind",
+              "logprob": -5.245833396911621,
+              "prob": null
+            },
+            {
+              "tok": " memory",
+              "logprob": -5.562058448791504,
+              "prob": null
+            },
+            {
+              "tok": "\n\n",
+              "logprob": -7.339834213256836,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 23,
+        "predicted_n": 64,
+        "decode_tok_s": 1.1888567932642495,
+        "prefill_tok_s": 3.838976628977931,
+        "wall_s": 59.970322920999024
+      },
+      "dspark": {
+        "draft_n": 132,
+        "draft_n_accepted": 29,
+        "acceptance": 0.2196969696969697
+      }
+    },
+    "prose/travel-highlands": {
+      "content": "<think>\nHere's a thinking thinking sequence\n\n1.  **Deconstruct the prompt:**\n    *   Topic: A day of walking through the Scottish Highlands.\n    *   Season: Late autumn.\n    *   Key elements: Light fails early, weather turns without warning.\n\n2.  **Brain",
+      "tokens": [
+        {
+          "tok": "<think>",
+          "logprob": -0.0005747539107687771,
+          "top": [
+            {
+              "tok": "<think>",
+              "logprob": -0.0005747539107687771,
+              "prob": null
+            },
+            {
+              "tok": "The",
+              "logprob": -8.985356330871582,
+              "prob": null
+            },
+            {
+              "tok": "</think>",
+              "logprob": -9.185015678405762,
+              "prob": null
+            },
+            {
+              "tok": "**",
+              "logprob": -9.511537551879883,
+              "prob": null
+            },
+            {
+              "tok": "",
+              "logprob": -9.761910438537598,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Here",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "'s",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " thinking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " thinking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " sequence",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "1",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " **",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "De",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "construct",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " prompt",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":**",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Topic",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " A",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " day",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " walking",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " through",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Scottish",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Highlands",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Season",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Late",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " autumn",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "   ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " *",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "  ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Key",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " elements",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ":",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " Light",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " fails",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " early",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ",",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " weather",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " turns",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " without",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " warning",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "2",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " ",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " **",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "Brain",
+          "logprob": -0.020674891769886017,
+          "top": [
+            {
+              "tok": "Brain",
+              "logprob": -0.020674891769886017,
+              "prob": null
+            },
+            {
+              "tok": "Initial",
+              "logprob": -3.9898521900177,
+              "prob": null
+            },
+            {
+              "tok": "Establish",
+              "logprob": -6.7193098068237305,
+              "prob": null
+            },
+            {
+              "tok": "S",
+              "logprob": -8.149683952331543,
+              "prob": null
+            },
+            {
+              "tok": " Brain",
+              "logprob": -8.869641304016113,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 26,
+        "predicted_n": 64,
+        "decode_tok_s": 2.7161688438457556,
+        "prefill_tok_s": 3.9750987582708808,
+        "wall_s": 30.25040660900413
+      },
+      "dspark": {
+        "draft_n": 56,
+        "draft_n_accepted": 48,
+        "acceptance": 0.8571428571428571
+      }
+    },
+    "prose/dialogue-argument": {
+      "content": "\nThe man on the left was a man of few words. He had a reputation for being a man of few words. He had a reputation for being a man of few words.\nThe man on the right was a man of many words. He had a reputation for being a man of many words. He had",
+      "tokens": [
+        {
+          "tok": "\n",
+          "logprob": -1.798374891281128,
+          "top": [
+            {
+              "tok": "\n",
+              "logprob": -1.798374891281128,
+              "prob": null
+            },
+            {
+              "tok": " They",
+              "logprob": -1.9065550565719604,
+              "prob": null
+            },
+            {
+              "tok": " The",
+              "logprob": -2.1922290325164795,
+              "prob": null
+            },
+            {
+              "tok": "\n\n",
+              "logprob": -2.5399253368377686,
+              "prob": null
+            },
+            {
+              "tok": " It",
+              "logprob": -3.6553494930267334,
+              "prob": null
+            }
+          ]
+        },
+        {
+          "tok": "The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " on",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " left",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " was",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " few",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " words",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " He",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " had",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " reputation",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " for",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " being",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " few",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " words",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " He",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " had",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " reputation",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " for",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " being",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " few",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " words",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "\n",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": "The",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " on",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " the",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " right",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " was",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " many",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " words",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " He",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " had",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " reputation",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " for",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " being",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " a",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " man",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " of",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " many",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " words",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": ".",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " He",
+          "logprob": 0.0,
+          "top": []
+        },
+        {
+          "tok": " had",
+          "logprob": -0.0065758791752159595,
+          "top": [
+            {
+              "tok": " had",
+              "logprob": -0.0065758791752159595,
+              "prob": null
+            },
+            {
+              "tok": " also",
+              "logprob": -6.331166744232178,
+              "prob": null
+            },
+            {
+              "tok": " repeated",
+              "logprob": -6.745195388793945,
+              "prob": null
+            },
+            {
+              "tok": " was",
+              "logprob": -7.490691661834717,
+              "prob": null
+            },
+            {
+              "tok": "",
+              "logprob": -7.730823040008545,
+              "prob": null
+            }
+          ]
+        }
+      ],
+      "timings": {
+        "prompt_n": 27,
+        "predicted_n": 64,
+        "decode_tok_s": 1.9192945632832652,
+        "prefill_tok_s": 3.949336738149174,
+        "wall_s": 40.33013469000434
+      },
+      "dspark": {
+        "draft_n": 80,
+        "draft_n_accepted": 42,
+        "acceptance": 0.525
+      }
+    }
+  }
+}

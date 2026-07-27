@@ -242,7 +242,149 @@ energy-per-token column will be built from. Idle GPU draw observed around
 
 ## Vulkan
 
-Not yet started.
+Built from the same fork (`-DGGML_VULKAN=ON`) and run on Thor's own GPU
+through the Vulkan driver (1.4.315), so this is a backend comparison on
+identical hardware -- not a device comparison. Build needs `glslc`
+(`apt install glslc`) and `spirv-headers`; neither is pulled in by the
+CUDA build.
+
+### DSpark is a net loss on Vulkan, on every configuration
+
+This is the headline. On CUDA the drafter is worth 1.37-1.75x. On Vulkan
+it costs more than it saves, every time:
+
+| Variant | Workload | native | DSpark | speedup | acceptance |
+| :-- | :-- | --: | --: | --: | --: |
+| ternary | code | 11.79 | 7.01 | **0.59x** | 54.5% |
+| ternary | prose | 11.79 | 6.38 | **0.54x** | 44.3% |
+| 1-bit | code | 15.98 | 7.56 | **0.47x** | 62.4% |
+| 1-bit | prose | 16.01 | 6.28 | **0.39x** | 51.8% |
+
+The cause is not draft quality. Acceptance on Vulkan matches CUDA to
+within about a point in every cell (54.5 vs 54.0, 62.4 vs 61.6, 44.3 vs
+43.3, 51.8 vs 51.4). The drafter is making the same predictions; the
+backend simply cannot execute the draft-and-verify pattern cheaply. Each
+speculation round is a small dependent dispatch, and Vulkan's
+submit/synchronise overhead is a much larger fraction of a step than
+CUDA's kernel launch. Worse acceptance would have meant a drafter
+problem; identical acceptance points squarely at dispatch cost.
+
+That acceptance is backend-independent is itself worth recording: it
+confirms acceptance is a property of the drafter and token distribution,
+not of the hardware or backend.
+
+### Vulkan native is 63-84% of CUDA
+
+| Variant | CUDA | Vulkan | ratio |
+| :-- | --: | --: | --: |
+| ternary code | 16.77 | 11.79 | 0.70x |
+| 1-bit code | 19.03 | 15.98 | 0.84x |
+
+Expected -- this backend's claim is reach, not peak. Note the 1-bit build
+closes most of the gap, consistent with a bandwidth-bound decode where
+the smaller weights matter more than kernel quality.
+
+### Vulkan does NOT match CUDA output on these models
+
+Gated against the CUDA oracle, same variant and mode, 15/16 traces
+diverge, with 5 diverging at token 0 -- the very first forward pass. That
+is not accumulated rounding.
+
+Two separate problems, and they need separating because they have
+different consequences:
+
+1. **With `n_probs` requested, Vulkan degenerates.** The trace capture
+   asks for top-5 logprobs, and under that request Vulkan emits
+   repetitive garbage where CUDA emits correct code:
+
+   ```
+   CUDA  : "    extern __shared__ float sdata[];\n    int tid = ..."
+   Vulkan: "{\n{\n{\n{\n{\n{\n{\n{\n{\n{\n{\n..."
+   ```
+
+   This is what fails the gate. It affects trace capture only.
+
+2. **Without `n_probs`, Vulkan is broadly sane but not identical.** The
+   benchmark path requests no probabilities, and there output lengths
+   track CUDA closely (350-490 chars, full 128 tokens, across nearly
+   every prompt). The throughput numbers above are therefore
+   trustworthy. But one prompt (`prose/coastal-town`, ternary only)
+   terminates after a single token with empty output on Vulkan while
+   CUDA produces a normal 128-token continuation -- so a real behavioural
+   difference remains even without `n_probs`.
+
+The consequence for this repo: **Vulkan performance numbers are
+reportable, Vulkan correctness is not established.** The fork ships a
+`test-vulkan-q2_0-shader-sim` binary, so Q2_0 support is intended rather
+than accidental, which makes this look like a genuine gap in the fork's
+Vulkan path for Bonsai's low-bit formats rather than an unsupported
+configuration. It is worth reporting upstream, with the caveat that the
+fork does not accept AI-generated contributions -- a human needs to
+confirm and file it.
+
+## CPU (ARM NEON)
+
+Thor's CPU is ARM, so the NEON path is testable here and the AVX-512 path
+is not; that one needs a borrowed x86 host and is left explicitly
+unvalidated. The fork already carries AVX512-VNNI repack GEMV/GEMM for
+Q1_0 and Q2_0 (commit `9fcaed763`), so the x86 code exists even though
+this repo cannot exercise it.
+
+Run with `-ngl 0` against the existing build -- the CPU backend is always
+compiled in, so no separate build is needed. `system_info` confirms the
+relevant paths are active: `NEON = 1, ARM_FMA = 1, MATMUL_INT8 = 1,
+SVE = 1, SVE_CNT = 16, DOTPROD = 1, REPACK = 1`.
+
+CPU decode is slow enough (~3.6 tok/s on 1-bit) that the CPU sweep uses
+`N_PREDICT=64` rather than 128 to keep the run tractable. tok/s, TTFT and
+acceptance remain directly comparable across backends -- only the number
+of tokens generated per request differs.
+
+### That shorter run exposed a bug in the gate
+
+With the CPU traces at 64 tokens and the oracle at 128, the comparison
+tool reported **16/16 divergent** for both variants. That was wrong: it
+was treating the length difference itself as divergence. Every trace
+actually agreed on all 64 tokens they had in common, with drift of
+0.01-0.06. Fixed -- `--compare` now reports `PREFIX-MATCH` when one run
+is a strict prefix of the other, and the real figure is 3/16 divergent.
+
+Worth recording as a gate-design lesson: a correctness gate that can
+report total failure for a benign configuration difference will be
+disbelieved when it reports real failures. The Vulkan result was only
+trustworthy because it was checked against this one.
+
+### CPU reproduces the oracle; the divergences are tie-flips
+
+| Backend | reproducing oracle | worst drift on those | character |
+| :-- | :-- | --: | :-- |
+| CPU (NEON) | 13/16 | 0.058 | numerical noise |
+| Vulkan | 1/16 | 3.586 | broken output |
+
+All 8 code prompts prefix-match exactly. The 3 prose divergences
+(`coastal-town@41`, `history-canal@29`, `philosophy-memory@6`) are what
+accumulated numerical noise looks like under greedy decoding: prose is
+higher-entropy, so a near-tie between two candidate tokens eventually
+flips. Note the tolerance: the worst drift among *matching* traces is
+0.058, just above the default 0.05, so cross-backend gating wants a
+tolerance around 0.10 while same-backend regression gating can stay
+tight.
+
+### DSpark on CPU straddles break-even, and not where predicted
+
+| Variant | Workload | native | DSpark | speedup | acceptance |
+| :-- | :-- | --: | --: | --: | --: |
+| ternary | code | 2.22 | 2.37 | 1.07x | 57.7% |
+| ternary | prose | 2.15 | 1.71 | 0.79x | 40.2% |
+| 1-bit | code | 3.41 | 3.00 | 0.88x | 56.6% |
+| 1-bit | prose | 3.35 | 3.35 | 1.00x | 52.6% |
+
+This is the regime an adaptive draft-disable heuristic is for. It also
+shows a threshold on acceptance alone would be the wrong trigger: 1-bit
+code *loses* at 56.6% acceptance while ternary code *wins* at 57.7%.
+Breakeven is set by the ratio of draft-step cost to target-step cost on
+that backend, so the heuristic must measure realised tok/s with drafting
+on versus off, not infer it from acceptance.
 
 ## CPU
 

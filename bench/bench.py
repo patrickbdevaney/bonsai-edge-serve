@@ -152,8 +152,11 @@ def run_workload(url, prompts, n_predict, temperature, timeout, warmup):
         if tps is None:
             print(f"  [{item['id']:<18}] no timings returned by server")
         else:
+            # ttft is None when the response carried no content chunk at
+            # all (e.g. the model emitted EOS immediately).
+            ttft_s = f"{ttft:6.3f}s" if ttft is not None else "    n/a"
             print(f"  [{item['id']:<18}] {tps:6.2f} tok/s  "
-                  f"ttft {ttft:6.3f}s  accept {acc}")
+                  f"ttft {ttft_s}  accept {acc}")
     return rows
 
 

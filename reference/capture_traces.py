@@ -212,10 +212,17 @@ def cmd_compare(args):
                 drift = max(drift, abs(la - lb))
         worst_drift = max(worst_drift, drift)
 
-        if first_div is None and len(toks_a) == len(toks_b):
-            status = "MATCH"
+        if first_div is None:
+            # Every token they have in common agrees. If the lengths also
+            # agree it is a clean match; if not, one run simply generated
+            # fewer tokens (e.g. the CPU sweep uses a smaller n_predict)
+            # and this is a prefix match, NOT a divergence. Counting the
+            # length difference as divergence would wrongly fail a
+            # backend that reproduces the oracle exactly.
+            status = "MATCH" if len(toks_a) == len(toks_b) \
+                else f"PREFIX-MATCH({len(toks_a)}v{len(toks_b)})"
         else:
-            status = f"DIVERGE@{first_div if first_div is not None else n}"
+            status = f"DIVERGE@{first_div}"
             n_divergent += 1
         print(f"  {tid:<24} {status:<16} max|dlogprob|={drift:.5f}  "
               f"({len(toks_a)} vs {len(toks_b)} tok)")

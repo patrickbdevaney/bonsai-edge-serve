@@ -17,6 +17,9 @@ RESULTS="${RESULTS:-$REPO/results}"
 PORT="${PORT:-8080}"
 N_PREDICT="${N_PREDICT:-128}"
 DEVICE="${DEVICE:-thor}"
+BACKEND="${BACKEND:-cuda}"
+# Results are tagged <device>-<backend>-<variant>-<mode> when the backend is
+# not CUDA, so cross-backend runs do not overwrite each other.
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-600}"
 
 mkdir -p "$RESULTS/bench" "$RESULTS/traces" "$RESULTS/raw"
@@ -46,12 +49,16 @@ wait_for_server() {
 for cell in "${CELLS[@]}"; do
     variant="${cell%%:*}"
     mode="${cell##*:}"
-    tag="$DEVICE-$variant-$mode"
+    if [ "$BACKEND" = "cuda" ]; then
+        tag="$DEVICE-$variant-$mode"
+    else
+        tag="$DEVICE.$BACKEND-$variant-$mode"
+    fi
     echo
     echo "================ $tag ================"
 
     logfile="$RESULTS/raw/$tag.server.log"
-    PORT="$PORT" "$HERE/serve_reference.sh" "$variant" "$mode" > "$logfile" 2>&1 &
+    PORT="$PORT" BACKEND="$BACKEND" "$HERE/serve_reference.sh" "$variant" "$mode" > "$logfile" 2>&1 &
     server_pid=$!
 
     # serve_reference.sh execs the server, so $! is the server itself.
