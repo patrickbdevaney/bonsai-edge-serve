@@ -26,7 +26,10 @@ hardware backs it. Everything else lives under Open Questions.
 | W7 | Shared low-bit format decodes identically on 3 backends | CUDA 1.2e-07, Vulkan 4.8e-06, NEON bit-exact | `124ed60` |
 | W8 | CUDA GEMV ladder | 16.0 -> 177.2 GB/s, 11x | `124ed60` |
 | W9 | Vulkan integer-dot path enabled | Q1_0 +40%, Q2_0 +2% | `c8f642f` |
-| W10 | Killed a bad direction before building on it | `n_rs_seq=0` dominated by simply not speculating | (this commit) |
+| W10 | Killed a bad direction before building on it | `n_rs_seq=0` dominated by simply not speculating | `c7eb705` |
+| W11 | CUDA GEMV is near-optimal | 212-220 GB/s vs 244.7 achievable = ~90% | `94df1be` |
+| W12 | Shape-adaptive kernel selection rule | v7 <32MB (L2), v5 >32MB (streaming) | `3f8c4e2` |
+| W13 | Four candidate optimizations tested and rejected on evidence | uint4 loads, row-blocking (streaming), split-K, `n_rs_seq=0` | various |
 
 ---
 
@@ -534,5 +537,6 @@ speculation to amortize. Always lead with absolute tok/s.
 | Q1 | Is the temp-0 DSpark divergence Thor-specific or general? | Needs a second device. If general, it is a finding about the reference implementation. |
 | Q2 | Why can't we reproduce 229 GB/s? We get 178.5. | Ladder shape matches prediction. The three obvious levers (wide loads, row-blocking with global and with shared activations) are now all tested and all lose, so the gap is not any of them. |
 | Q3 | Does rebuilding the fork with glslang >= 16 lift its Vulkan tok/s? | Directly testable; the backend currently has no integer-dot path. |
+| ~~Q2~~ | ~~Why can't we reproduce 229 GB/s?~~ | **LIKELY ANSWERED: L2 residency. v5 hits 237.9 and v7 308.6 GB/s on L2-resident shapes; see K2c.** |
 | ~~Q4~~ | ~~What does `n_rs_seq = 0` cost in throughput?~~ | **ANSWERED: 59% of throughput. Strictly dominated -- see S6.** |
 | Q5 | Can factor buffering replace the 748 MiB rollback ring? | Literature reports 78% DRAM reduction, numerically exact. |
