@@ -381,7 +381,10 @@ static Timing time_kernel(F launch, size_t bytes, int iters) {
     CHECK(cudaEventRecord(b));
     CHECK(cudaEventSynchronize(b));
     float ms = 0; CHECK(cudaEventElapsedTime(&ms, a, b));
-    CHECK(cudaGetLastError());
+    // A launch that failed (typically too much dynamic shared memory for
+    // this shape) must not abort the whole sweep -- report it and let the
+    // other rungs run.
+    if (cudaGetLastError() != cudaSuccess) return { -1.f, -1.0 };
     return { ms / iters, (double)bytes * iters / (ms / 1e3) / 1e9 };
 }
 
@@ -489,6 +492,14 @@ int main(int argc, char **argv) {
 
     std::vector<float> hout(N);
     auto check = [&](const char *name, const std::vector<float> &ref, float tol) {
+        // A failed launch leaves dout holding the PREVIOUS kernel's result,
+        // which then compares equal and reports a false pass. Ask the
+        // runtime before trusting the buffer.
+        cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) {
+            printf("  %-26s LAUNCH FAILED: %s\n", name, cudaGetErrorString(le));
+            return false;
+        }
         CHECK(cudaMemcpy(hout.data(), dout, N*sizeof(float), cudaMemcpyDeviceToHost));
         double worst = 0;
         for (int r = 0; r < NREF; ++r) {
@@ -505,9 +516,22 @@ int main(int argc, char **argv) {
     { int t = 256, g = (N + t - 1) / t;
       gemv_q2_v0<<<g, t>>>(dq2, ds, dxq, dout, N, K); CHECK(cudaDeviceSynchronize());
       ok &= check("v0 naive", ref2, 2e-2); }
-    { int t = 256, g = (N + t - 1) / t;
-      gemv_q2_v1<<<g, t, K*sizeof(float)>>>(dq2, ds, dxq, dout, N, K); CHECK(cudaDeviceSynchronize());
-      ok &= check("v1 smem activations", ref2, 2e-2); }
+    {
+      // v1 stages K floats in shared memory, which exceeds the 48 KB
+      // default beyond K=12288 and needs an explicit opt-in.
+      size_t need = (size_t)K * sizeof(float);
+      cudaFuncSetAttribute(gemv_q2_v1, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)need);
+      int maxsm = 0; cudaDeviceGetAttribute(&maxsm, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0);
+      if (need > (size_t)maxsm) {
+          printf("  %-26s skipped (needs %zu KiB smem, max %d KiB)\n",
+                 "v1 smem activations", need/1024, maxsm/1024);
+      } else {
+          int t = 256, g = (N + t - 1) / t;
+          gemv_q2_v1<<<g, t, need>>>(dq2, ds, dxq, dout, N, K);
+          CHECK(cudaDeviceSynchronize());
+          ok &= check("v1 smem activations", ref2, 2e-2);
+      }
+    }
     { int t = 256, w = t/32, g = (N + w - 1) / w;
       gemv_q2_v2<<<g, t>>>((const uint32_t*)dq2, ds, da4, das16, da, dout, N, K);
       CHECK(cudaDeviceSynchronize()); ok &= check("v2 dp4a, GGUF layout", ref2, 2e-2); }
@@ -546,6 +570,8 @@ int main(int argc, char **argv) {
 
     add("v0 naive", q2_bytes, [=]{ int t=256,g=(N+t-1)/t;
         gemv_q2_v0<<<g,t>>>(dq2,ds,dxq,dout,N,K); });
+    // v1 only fits below the shared-memory limit; see the validation note.
+    if ((size_t)K * sizeof(float) <= 48u*1024u)
     add("v1 smem activations", q2_bytes, [=]{ int t=256,g=(N+t-1)/t;
         gemv_q2_v1<<<g,t,K*sizeof(float)>>>(dq2,ds,dxq,dout,N,K); });
     add("v2 dp4a GGUF", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
@@ -578,8 +604,10 @@ int main(int argc, char **argv) {
     add("v4 q1 8 rows/warp", q1_bytes, [=]{ int t=256,w=t/32,g=(N+w*8-1)/(w*8);
         gemv_q1_v4<8><<<g,t>>>((const uint32_t*)dq1r,ds,da4,das32,da,dout,N,K); });
 
-    for (int i = 0; i < nr; ++i)
-        printf("  %-22s %8.3f ms   %7.1f GB/s\n", rows[i].name, rows[i].t.ms, rows[i].t.gbs);
+    for (int i = 0; i < nr; ++i) {
+        if (rows[i].t.ms < 0) printf("  %-22s   LAUNCH FAILED\n", rows[i].name);
+        else printf("  %-22s %8.3f ms   %7.1f GB/s\n", rows[i].name, rows[i].t.ms, rows[i].t.gbs);
+    }
 
     printf("\nGB/s counts weight bytes only -- that is the term that scales\n"
            "with model size and dominates batch-1 decode.\n");

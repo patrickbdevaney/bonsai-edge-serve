@@ -1,0 +1,74 @@
+CUDA GEMV across shapes: the L2 crossover
+=========================================
+
+Every earlier kernel conclusion was drawn at ONE shape (N=131072 K=8192,
+256 MiB of weights). Re-running across shapes shows the best kernel
+DEPENDS on whether the weight matrix fits Thor's 32 MB L2, and the two
+regimes prefer opposite designs.
+
+CROSSOVER SWEEP (K=5120, growing N, Q2_0, GB/s of weight bytes)
+---------------------------------------------------------------
+  weights MiB      N       v5 (1 row)   v7 (2 rows)   winner
+        5        4096         212.4        254.8        v7
+       20       16384         237.9        308.6        v7
+       40       32768         212.6        204.5        v5
+       80       65536         217.1        207.9        v5
+      160      131072         220.5        211.3        v5
+      320      262144         177.6        169.9        v5
+
+The flip happens between 20 and 40 MiB, i.e. exactly at the 32 MB L2.
+
+REAL BONSAI MATRIX SHAPES (hidden 5120, intermediate 17408)
+-----------------------------------------------------------
+  shape              MiB    v3      v5      v7x2    v7x4    v7x8
+  K=5120  N=5120       6   159.9   214.5   264.5
+  K=5120  N=17408     21   172.5   241.0   310.8
+  K=17408 N=5120      21   177.3   310.9   387.8   349.9   305.7
+
+Note 387.8 GB/s EXCEEDS the 273 GB/s DRAM spec. That is not an error and
+not a win -- it is the tell that these matrices are being served from L2.
+
+WHICH REGIME IS REAL? THE STREAMING ONE.
+----------------------------------------
+Every individual Bonsai matrix (6-21 MiB) fits in L2, so it is tempting
+to read the 264-388 GB/s numbers as the real decode rate. They are not.
+
+A decode step traverses all 64 layers, ~3.8 GB of weights for the 1-bit
+build, and reads each matrix EXACTLY ONCE. There is no reuse to exploit:
+by the time the next token needs layer 0 again, the intervening 3.8 GB
+has evicted it many times over. The benchmark's 30 iterations over one
+resident matrix manufacture a locality that decode does not have.
+
+So the honest decode proxy is the >32 MB column, where v5 wins and lands
+at 178-220 GB/s. The L2-resident figures describe a regime that only
+occurs in a microbenchmark.
+
+CORRECTION TO OUR OWN DESIGN RULE
+---------------------------------
+We previously concluded (WIKI K2b) that "row-blocking is wrong for this
+kernel" and that the kernel is "issue-bound and occupancy-sensitive, not
+latency-bound." That is right in the STREAMING regime and wrong in the
+L2-resident one, where v7 beats v5 by 23-30%.
+
+The physical reading: when weights come from DRAM, the kernel is limited
+by bandwidth and by occupancy, and extra rows per warp cost registers
+without buying bandwidth. When weights come from L2 -- which is ~4x
+faster than DRAM here -- bandwidth is no longer the limit, and the
+activation reuse that rows-per-warp provides starts to pay.
+
+Stated as a rule: rows-per-warp buys ACTIVATION REUSE, which is only
+worth having once WEIGHT bandwidth has stopped being the bottleneck.
+
+POSSIBLE RESOLUTION OF OPEN QUESTION Q2
+---------------------------------------
+Q2 asks why we measure 178 GB/s against a reported 229 GB/s (84% of
+spec). A shape with any L2 residency reaches 229 easily here: v5 alone
+hits 237.9 GB/s at 20 MiB, and v7 hits 308.6. So a 229 GB/s figure is
+fully consistent with a measurement that had L2 reuse, and inconsistent
+with our streaming measurements.
+
+This is a HYPOTHESIS, not a confirmation -- the reported figure was
+attributed to a 256 MiB shape, where we measure 177.6. But it is the
+first explanation that fits the numbers, and it predicts something
+checkable: any re-measurement must state the weight footprint relative
+to L2, or the number is not interpretable.

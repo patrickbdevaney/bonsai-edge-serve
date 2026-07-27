@@ -88,6 +88,30 @@ several prose prompts, giving zero decode time and a sentinel 1e6 tok/s.
 the workload actually ran. `measure_power.sh` now rejects any run
 producing under 32 tokens.
 
+### L6. A launch failure reported as a PASS
+
+At K=17408 the harness printed `v1 smem activations ... OK`. It never
+ran: v1 asks for `K*sizeof(float)` = 68 KB of dynamic shared memory,
+above the 48 KB default, so the launch failed. `check()` then compared
+whatever was still in the output buffer -- v0's result, from the previous
+rung -- and it matched.
+
+Worse, the failure then killed the entire throughput section silently,
+because `time_kernel` ended in `CHECK(cudaGetLastError())` and `CHECK`
+calls `exit(1)`. The run printed an empty "=== throughput ===" header and
+exited 0.
+
+Fixed three ways: `check()` calls `cudaGetLastError()` before trusting
+the buffer, oversized-smem kernels are opted in via
+`cudaFuncAttributeMaxDynamicSharedMemorySize` or explicitly skipped with
+a printed reason, and a failed launch in timing reports `LAUNCH FAILED`
+for that row instead of aborting the sweep.
+
+**Generalizable:** comparing an output buffer proves nothing unless you
+know the kernel wrote it. Any harness that reuses a buffer across
+variants needs an explicit did-it-run check, or a failure will present as
+agreement with the previous variant.
+
 ### L5. A validation failure that was the test's fault, not the kernel's
 
 The CUDA ladder's v0/v1 rungs failed at 13.85% relative error. They were
@@ -207,6 +231,51 @@ not latency-bound.** The one lever that worked reduced the *number of
 instructions per weight byte*. Every lever that added parallelism to hide
 latency made it worse. Standard GPU intuition ("more in flight is
 better") is backwards here.
+
+**...but only in the streaming regime. See K2c -- this rule was
+over-generalized from a single shape.**
+
+### K2c. The rule above is shape-dependent, and we had only tested one shape
+
+Every conclusion in K2/K2b was drawn at N=131072 K=8192 (256 MiB). Across
+shapes, the winner flips at the L2 boundary:
+
+| weights MiB | v5 (1 row) | v7 (2 rows) | winner |
+| --: | --: | --: | :-- |
+| 5 | 212.4 | **254.8** | v7 |
+| 20 | 237.9 | **308.6** | v7 |
+| 40 | **212.6** | 204.5 | v5 |
+| 160 | **220.5** | 211.3 | v5 |
+| 320 | **177.6** | 169.9 | v5 |
+
+The flip is between 20 and 40 MiB -- exactly Thor's 32 MB L2. On the real
+Bonsai down-projection shape (K=17408 N=5120, 21 MiB) v7 reaches **387.8
+GB/s**, well past the 273 GB/s DRAM spec, which is the tell that L2 is
+serving it.
+
+Physical reading: **rows-per-warp buys ACTIVATION reuse, which is only
+worth having once WEIGHT bandwidth has stopped being the bottleneck.**
+From DRAM, extra rows cost registers and buy nothing. From L2 -- ~4x
+faster here -- bandwidth is no longer the limit and the reuse pays.
+
+**Which regime is real: the streaming one.** Every Bonsai matrix (6-21
+MiB) fits L2, but a decode step reads all 64 layers (~3.8 GB) and touches
+each matrix exactly once, so the intervening traffic evicts it long
+before the next token. The benchmark's repeated iterations manufacture a
+locality decode does not have. **v5 remains the kernel to ship**; the
+L2-resident numbers describe a microbenchmark-only regime.
+
+**Generalizable:** a kernel conclusion drawn at one problem size is a
+conclusion about that size. Sweep the size until you cross a cache
+boundary, or you are characterizing your benchmark rather than your
+kernel.
+
+This also gives the first plausible answer to Q2: v5 alone hits 237.9
+GB/s at 20 MiB and v7 hits 308.6, so a reported 229 GB/s is entirely
+consistent with a measurement that had L2 reuse. Hypothesis, not
+confirmation -- but it predicts something checkable, namely that any such
+figure must state its weight footprint relative to L2 to be
+interpretable.
 
 ### K3. The biased-encoding identity is the one thing that ports everywhere
 
