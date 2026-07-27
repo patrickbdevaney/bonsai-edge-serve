@@ -74,8 +74,24 @@ cache untouched.
 
 **Why this matters:** the strided version *compiles, runs, and produces
 plausible numbers*. It would be caught only by a numerical check against
-a reference, which is why any attempt must gate on
-`reference/capture_traces.py` before reporting a speedup.
+a reference.
+
+### STATUS: extraction implemented and gated -- and it is faster
+
+The correct form is now built and validated in our own harness
+(`kernels/vulkan/gemv_q2.comp`, `-DGGUF_ORDER`), against the same CPU
+reference:
+
+```
+q2 int-dot           (repacked)      101.7 / 104.3 / 102.6 GB/s
+q2 int-dot GGUF-ord  (as ggml gets)  106.9 / 106.1 / 110.4 GB/s
+max rel err 4.783e-06 -- identical to the repacked path
+```
+
+GGUF order is **2-8% faster**, reproducibly, despite more ALU per code.
+So the integration needs **no repack, no new weight layout, no on-disk
+change** -- only `unpack_gguf()` plus the type added to the three gates.
+Copy the function verbatim; it is tested.
 
 ### Bias correction, already derived
 

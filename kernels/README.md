@@ -356,8 +356,12 @@ not the fast path anywhere it matters.
 Rewritten after measuring; the earlier list had two items that are now
 done and two that turned out to be wrong.
 
-1. **Add `q1_0`/`q2_0` to ggml-vulkan's MMVQ type lists.** This is the
-   highest-value item and it is now precisely located. The toolchain gate
+1. **Add `q1_0`/`q2_0` to ggml-vulkan's MMVQ type lists.** Highest-value
+   item, and the risky part is now **done**: the GGUF-order extraction
+   ggml must use is implemented, gated against the CPU reference
+   (4.783e-06, identical to the repacked path) and measured 2-8% FASTER
+   than repacking. So no repack and no format change are needed -- copy
+   `unpack_gguf()` from `vulkan/gemv_q2.comp` verbatim. The toolchain gate
    is open (glslc 2026.4-dev builds `GL_EXT_integer_dot_product`), but
    `is_legacy_quant()` at `vulkan-shaders-gen.cpp:226` is
    `{q4_0,q4_1,q5_0,q5_1,q8_0}` and the MMVQ gate at line 710 admits that
