@@ -1,0 +1,61 @@
+Rebuilding ggml-vulkan with a newer glslc: necessary, not sufficient
+====================================================================
+
+Claim under test (from our own commit c8f642f): "rebuilding the fork with
+a newer glslc should lift the Vulkan tok/s independently of anything we
+write."
+
+RESULT: FALSE. Measured, code workload, 128 tokens, ctx 4096:
+
+  build            variant   code tok/s
+  build-vulkan     ternary     11.62      (glslc 2023.8)
+  build-vulkan2    ternary     11.80      (glslc 2026.4-dev)
+  build-vulkan     onebit      15.99
+  build-vulkan2    onebit      16.02
+
++1.5% and +0.2% -- within run-to-run noise.
+
+The rebuild did work, and did more than expected. With glslc 2026.4-dev
+the fork's own feature tests now pass FIVE extensions that were all
+silently disabled before:
+
+  GL_KHR_cooperative_matrix              supported by glslc
+  GL_NV_cooperative_matrix2              supported by glslc
+  GL_NV_cooperative_matrix_decode_vector supported by glslc
+  GL_EXT_integer_dot_product             supported by glslc
+  GL_EXT_bfloat16                        supported by glslc
+
+So the toolchain gate is now open. It changed nothing for our formats
+because there is a SECOND, independent gate in the shader generator
+(ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp:226):
+
+  bool is_legacy_quant(const std::string& type_name) {
+      return type_name == "q4_0" || type_name == "q4_1" ||
+             type_name == "q5_0" || type_name == "q5_1" ||
+             type_name == "q8_0";
+  }
+
+and the MMVQ gate at line 710:
+
+  if (is_legacy_quant(tname) || tname == "mxfp4" || is_k_quant(tname)
+      || tname == "iq1_s" || tname == "iq1_m") { ... }
+
+Neither q1_0 nor q2_0 appears in either list. So Bonsai's two formats
+take the float dequant path regardless of what the compiler supports,
+while IQ1_S -- a strictly harder format -- gets the integer-dot path.
+
+TWO GATES, AND THEY ARE INDEPENDENT
+-----------------------------------
+  1. toolchain:  glslc must implement GL_EXT_integer_dot_product   -> FIXED
+  2. format:     the type must be in the MMVQ/MMQ type lists       -> STILL SHUT
+
+Fixing gate 1 alone is worth nothing for these models. Gate 2 is a source
+change to ggml-vulkan: add q1_0/q2_0 to the type lists and supply the
+matching MMVQ dequant functions in mul_mat_vecq_funcs.glsl. Precedent for
+what that is worth is PR #16536, which did exactly this for the k-quants
+and measured Q2_K +78% and Q4_K_S +131% on pp512.
+
+Our own standalone kernels are the independent evidence that the
+instruction is worth having on this hardware: the same Q1_0 GEMV goes
+71.2 -> 99.4 GB/s (+40%) when it switches from the scalar fallback to
+dotPacked4x8AccSatEXT.

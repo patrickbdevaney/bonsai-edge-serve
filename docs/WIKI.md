@@ -380,6 +380,33 @@ test and, failing it, compiles the **entire Vulkan backend with no
 integer-dot path**. Every llama.cpp Vulkan number in this repo was
 measured with it disabled.
 
+### T1b. ...but fixing the toolchain gate alone changed nothing (correction)
+
+We predicted in `c8f642f` that rebuilding the fork with a newer glslc
+"should lift them independently of anything we write." **Measured, it
+does not:** ternary 11.62 -> 11.80, 1-bit 15.99 -> 16.02 tok/s, both
+within noise.
+
+The rebuild worked, and enabled *five* previously-disabled extensions
+(coopmat, coopmat2, decode_vector, bfloat16, integer_dot). It changed
+nothing because there is a **second, independent gate** in the shader
+generator:
+
+```cpp
+bool is_legacy_quant(const std::string& t) {   // vulkan-shaders-gen.cpp:226
+    return t=="q4_0"||t=="q4_1"||t=="q5_0"||t=="q5_1"||t=="q8_0";
+}
+```
+
+Neither `q1_0` nor `q2_0` is in that list, nor in the MMVQ gate at line
+710, so Bonsai's formats take the float path regardless of compiler
+support -- while IQ1_S, a harder format, gets integer dot.
+
+**Generalizable:** a capability needs every gate on its path open.
+Finding and opening one gate proves nothing about the others, and the
+satisfying feeling of having fixed "the" blocker is exactly when to go
+looking for the next one.
+
 ### T2. Jetson breaks the obvious tools
 
 `nvidia-smi` reports "Not Supported" for memory. `tegrastats` is the
