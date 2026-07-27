@@ -78,6 +78,13 @@ elif [ "$MODE" != "native" ]; then
     echo "unknown mode: $MODE (want: native|dspark)" >&2; exit 2
 fi
 
+# EXTRA_ARGS passes through anything else, e.g. EXTRA_ARGS="-lv 10" to get
+# ggml's buffer-size accounting for bench/measure_memory.py.
+if [ -n "${EXTRA_ARGS:-}" ]; then
+    # shellcheck disable=SC2206
+    ARGS+=($EXTRA_ARGS)
+fi
+
 echo "==> $BIN"
 echo "==> variant=$VARIANT mode=$MODE engine=$ENGINE port=$PORT ctx=$CTX"
 exec "$BIN" "${ARGS[@]}"

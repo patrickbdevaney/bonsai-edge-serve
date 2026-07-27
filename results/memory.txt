@@ -1,60 +1,108 @@
-Resident memory on Jetson Thor -- measurements and what they mean
-================================================================
+Resident memory on Jetson Thor -- measured from ggml's own allocator
+====================================================================
 
-Device: NVIDIA Thor, CC 11.0, 122 GiB unified CPU+GPU memory pool.
+Device: NVIDIA Thor, CC 11.0, 122 GiB unified CPU+GPU pool.
 Engine: PrismML llama.cpp fork b9597-7529fdaaf, CUDA build (ARCHS = 1100).
+Method: bench/measure_memory.py -- parses ggml's buffer-size accounting at
+        -lv 10. Exact, additive, and attributable to target vs drafter.
 
-TRUSTED (native / single model)
--------------------------------
-Peak RSS (VmHWM) of llama-server, weights mmap'd (default):
+Validation: ternary/native sums to 7812.28 MiB of device memory, which is
+exactly the figure the fork itself projects ("projected to use 7812 MiB of
+device memory"). The two are computed independently.
 
-    config              peak RSS      model file    result
-    ternary-native      7158 MiB      7.17 GB       matches
-    onebit-native       3952 MiB      3.80 GB       matches
+TOTALS BY CONTEXT (MiB)
+-----------------------
+                        ctx=2048   ctx=4096   ctx=8192   ctx=16384
+  ternary native            7247       7379       7643        8171
+  ternary dspark           10988      11713      13257       16729
+  onebit  native            4041       4173       4437        4965
+  onebit  dspark            7631       8355       9899       13372
 
-Both land on their GGUF size, which is the validation that this metric
-measures the weights and not the machine. These are the numbers
-published in the README.
+BREAKDOWN AT ctx=16384
+----------------------
+ternary / native                     ternary / dspark
+  6500.64  CUDA0      model            target:
+  1024.00  CUDA0      KV                 6500.64  CUDA0      model
+   322.07  CPU_Mapped model              1024.00  CUDA0      KV
+   149.62  CUDA0      RS                  863.64  CUDA0      compute
+   138.02  CUDA0      compute             748.12  CUDA0      RS
+    36.02  CUDA_Host  compute             322.07  CPU_Mapped model
+     0.95  CUDA_Host  output               36.02  CUDA_Host  compute
+  ------------------------------           0.95  CUDA_Host  output
+  device 7812.28  host 359.04           drafter:
+  TOTAL  8171.32                          2752.28  CUDA_Host  compute
+                                          2432.22  CUDA0      compute
+                                          1534.15  CUDA0      model
+                                           322.07  CPU_Mapped model
+                                           192.00  CUDA0      KV
+                                             0.95  CUDA_Host  output
+                                        ------------------------------
+                                        device 13294.77  host 3434.34
+                                        TOTAL  16729.11
 
-NOT TRUSTED (DSpark / two models)
----------------------------------
-The same metric with the drafter attached is not additive:
+WHAT DSPARK ACTUALLY COSTS
+--------------------------
+The server logs "estimated memory usage of draft model is 1802.06 MiB".
+The real cost at ctx=16384 is about 4.7x that:
 
-    config              peak RSS   vs native   drafter est. by server
-    ternary-dspark      7180 MiB      +22 MiB          1802 MiB
-    onebit-dspark       6719 MiB    +2767 MiB          1802 MiB
+    ternary   8171 -> 16729 MiB   (+8558, 2.05x)
+    onebit    4965 -> 13372 MiB   (+8407, 2.69x)
 
-Both servers log the identical "estimated memory usage of draft model is
-1802.06 MiB" and both load the drafter successfully (54.0% / 61.6%
-acceptance measured), so the +22 MiB figure is an artifact, not a real
-difference. With two mmap'd models the kernel reclaims pages from one
-mapping while faulting in the other, so peak RSS stops being a sum.
+Where it goes, in order:
 
-The README therefore reports the server's own 1802 MiB drafter estimate
-for DSpark rows, labelled as an estimate, rather than publishing a
-measured number known to be wrong.
+  1. Drafter compute buffers      5184 MiB  (2432 device + 2752 host)
+     The dominant term, and it is not the weights. The fork logs
+     "draft-dspark: raising draft ctx n_batch 2048 -> 16388 (full-context
+     staging + block)", so the drafter's compute buffers are sized to the
+     whole context rather than to a draft block. This is what makes the
+     overhead scale with -c.
+  2. Drafter weights             1534 MiB device, plus a CPU_Mapped buffer
+     (322 MiB ternary / 170 MiB 1-bit) that is the SAME size as the
+     target's, consistent with the documented sharing of embeddings and
+     output head.
+  3. Target recurrent state       +598 MiB  (149.62 -> 748.12)
+     Block verification needs more GDN recurrent-state slots, so attaching
+     a drafter grows the TARGET's buffers, not just the drafter's.
+  4. Target compute               +726 MiB  (138.02 -> 863.64)
+  5. Drafter KV                    192 MiB
+
+Points 3 and 4 are the non-obvious ones: roughly 1.3 GB of the DSpark
+overhead lands on the target model, not the drafter.
+
+CONSEQUENCE FOR ORIN NANO SUPER (8 GB, Phase 3)
+-----------------------------------------------
+The pool is shared, so the TOTAL column is the constraint, and the OS
+needs its share of the 8 GB. Reading the table above:
+
+  - 1-bit native FITS with room: 4041 MiB at 2K, 4437 MiB at 8K ctx.
+  - ternary native is marginal at best: 7247 MiB even at ctx=2048, on an
+    8 GB device that must also hold the OS. Realistically it does not fit.
+  - DSpark does NOT fit in any configuration tested. The cheapest is
+    1-bit at ctx=2048 and it still wants 7631 MiB.
+
+So the Phase 3 plan needs revising: the directive assumed "1-bit +
+drafter fits, ternary + drafter is tight". Measured, neither DSpark
+configuration fits an 8 GB Orin at these settings, and the blocker is the
+full-context drafter staging buffer rather than the weights. Shrinking
+that buffer -- drafting against a block-sized batch instead of the full
+context -- is the change that would make DSpark viable on 8 GB, and it is
+a concrete target for this repo's own engine in Phase 2.
 
 METHODS THAT DO NOT WORK HERE (recorded so they are not retried)
 ---------------------------------------------------------------
-1. nvidia-smi          -- reports "Not Supported" for memory usage on
-                          Jetson; there is no separate GPU pool.
+1. nvidia-smi          -- reports "Not Supported"; no separate GPU pool.
 2. host MemTotal
-   minus MemAvailable  -- measures the whole machine. Reported ~28 GiB
-                          for BOTH the 7.2 GB and the 3.8 GB model,
-                          which is what exposed it as useless here.
-3. cudaMemGetInfo      -- moved only ~450 MiB for a 7.2 GB model. The
-                          weights are unified-memory pages, not a
-                          discrete device allocation it can see.
-4. --no-mmap + RSS     -- ternary drops to 796 MiB, because the weights
-                          are copied into CUDA allocations that never
-                          appear in process RSS.
-5. VmRSS (instant)     -- read 800 MiB against a true 7.0 GiB footprint;
-                          the kernel evicts untouched mmap pages.
-
-OPEN ITEM
----------
-A trustworthy two-model footprint number on unified memory still needs a
-different approach -- most likely summing the backend buffer sizes ggml
-allocates internally, rather than observing the process from outside.
-This matters for the Orin Nano Super target (8 GB), where whether
-ternary + drafter fits is the whole question.
+   minus MemAvailable  -- measures the whole machine. Read ~28 GiB for
+                          BOTH the 7.2 GB and the 3.8 GB model.
+3. cudaMemGetInfo      -- moved ~450 MiB for a 7.2 GB model.
+4. --no-mmap + RSS     -- 796 MiB; weights land in CUDA allocations that
+                          never appear in process RSS.
+5. instantaneous VmRSS -- 800 MiB against a real multi-GB footprint.
+6. peak RSS (VmHWM)    -- LOOKED right for a single model (7158 MiB vs a
+                          7.17 GB file) but that agreement is a
+                          coincidence: smaps shows only 322 MiB of the
+                          mapping actually resident, so VmHWM was
+                          measuring transient page-cache traffic during
+                          load, not steady-state residency. It is not
+                          additive across two models, which is how the
+                          problem was noticed.

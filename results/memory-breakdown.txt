@@ -1,0 +1,72 @@
+=== ternary / native ===
+  target:
+        6500.64 MiB  CUDA0        model
+        1024.00 MiB  CUDA0        KV
+         322.07 MiB  CPU_Mapped   model
+         149.62 MiB  CUDA0        RS
+         138.02 MiB  CUDA0        compute
+          36.02 MiB  CUDA_Host    compute
+           0.95 MiB  CUDA_Host    output
+  ---- device (CUDA0):   7812.28 MiB
+  ---- host:              359.04 MiB
+  ---- TOTAL:            8171.32 MiB
+
+=== ternary / dspark ===
+  target:
+        6500.64 MiB  CUDA0        model
+        1024.00 MiB  CUDA0        KV
+         863.64 MiB  CUDA0        compute
+         748.12 MiB  CUDA0        RS
+         322.07 MiB  CPU_Mapped   model
+          36.02 MiB  CUDA_Host    compute
+           0.95 MiB  CUDA_Host    output
+  drafter:
+        2752.28 MiB  CUDA_Host    compute
+        2432.22 MiB  CUDA0        compute
+        1534.15 MiB  CUDA0        model
+         322.07 MiB  CPU_Mapped   model
+         192.00 MiB  CUDA0        KV
+           0.95 MiB  CUDA_Host    output
+  ---- device (CUDA0):  13294.77 MiB
+  ---- host:             3434.34 MiB
+  ---- TOTAL:           16729.11 MiB
+
+=== onebit / native ===
+  target:
+        3446.27 MiB  CUDA0        model
+        1024.00 MiB  CUDA0        KV
+         170.51 MiB  CPU_Mapped   model
+         149.62 MiB  CUDA0        RS
+         138.02 MiB  CUDA0        compute
+          36.02 MiB  CUDA_Host    compute
+           0.95 MiB  CUDA_Host    output
+  ---- device (CUDA0):   4757.91 MiB
+  ---- host:              207.48 MiB
+  ---- TOTAL:            4965.39 MiB
+
+=== onebit / dspark ===
+  target:
+        3446.27 MiB  CUDA0        model
+        1024.00 MiB  CUDA0        KV
+         863.64 MiB  CUDA0        compute
+         748.12 MiB  CUDA0        RS
+         170.51 MiB  CPU_Mapped   model
+          36.02 MiB  CUDA_Host    compute
+           0.95 MiB  CUDA_Host    output
+  drafter:
+        2752.28 MiB  CUDA_Host    compute
+        2432.22 MiB  CUDA0        compute
+        1534.15 MiB  CUDA0        model
+         192.00 MiB  CUDA0        KV
+         170.51 MiB  CPU_Mapped   model
+           0.95 MiB  CUDA_Host    output
+  ---- device (CUDA0):  10240.40 MiB
+  ---- host:             3131.22 MiB
+  ---- TOTAL:           13371.62 MiB
+
+| Variant | Mode | Device MiB | Host MiB | Total MiB |
+| :-- | :-- | --: | --: | --: |
+| ternary | native | 7812 | 359 | 8171 |
+| ternary | dspark | 13295 | 3434 | 16729 |
+| onebit | native | 4758 | 207 | 4965 |
+| onebit | dspark | 10240 | 3131 | 13372 |

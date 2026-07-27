@@ -162,23 +162,76 @@ shares the system memory pool and weights are mmap'd:
 | `--no-mmap` + RSS | 796 MiB | weights go into CUDA allocations absent from RSS |
 | instantaneous `VmRSS` | ~800 MiB | kernel evicts untouched mmap pages |
 
-What works for a single model is the server process's **peak** RSS
-(`VmHWM`), which captures every weight page actually touched: 7158 MiB
-for the 7.17 GB ternary build and 3952 MiB for the 3.80 GB 1-bit build,
-both matching their GGUF. That agreement is the validation.
+Peak RSS (`VmHWM`) initially looked like the answer -- 7158 MiB for the
+7.17 GB ternary build, 3952 MiB for the 3.80 GB 1-bit build, each
+matching its GGUF. **That agreement was a coincidence.** `smaps` shows
+only 322 MiB of the model mapping actually resident: `VmHWM` was
+measuring transient page-cache traffic while weights were copied into
+backend buffers, not steady-state residency. The tell was that it is not
+additive -- attaching an identical drafter moved it +22 MiB in one
+configuration and +2767 MiB in another.
 
-It stops working once the drafter is attached. With two mmap'd models the
-kernel reclaims pages from one mapping while faulting in the other, so
-peak RSS is no longer a sum: the ternary DSpark config measured only
-+22 MiB over native while the 1-bit config measured +2767 MiB, despite
-both servers logging the same `estimated memory usage of draft model is
-1802.06 MiB` and both demonstrably running the drafter. The README
-reports the server's own estimate for DSpark rows rather than a measured
-number known to be wrong. Full detail in `results/memory.txt`.
+**What works is asking ggml.** Every backend buffer is logged at `-lv 10`:
 
-A trustworthy two-model footprint on unified memory remains an open item,
-and it matters: whether ternary + drafter fits the 8 GB Orin Nano Super
-is exactly the question Phase 3 has to answer.
+```
+load_tensors:            CUDA0 model buffer size   = 6500.64 MiB
+load_tensors:       CPU_Mapped model buffer size   =  322.07 MiB
+llama_kv_cache:          CUDA0 KV buffer size      = 1024.00 MiB
+llama_memory_recurrent:  CUDA0 RS buffer size      =  149.62 MiB
+sched_reserve:           CUDA0 compute buffer size =  138.02 MiB
+```
+
+Exact, additive, attributable to target vs drafter.
+`bench/measure_memory.py` parses it. Two subtleties: the fork runs a
+parameter-fitting dry pass whose buffers are also logged (real
+allocations are those after `mmap = true`), and `loading draft model`
+separates target from drafter.
+
+Independently validated: ternary native device buffers sum to 7812.28
+MiB, exactly the fork's own `projected to use 7812 MiB`.
+
+### DSpark costs about 4.7x what the server estimates
+
+The server logs `estimated memory usage of draft model is 1802.06 MiB`.
+Measured at ctx 16384 it adds ~8.5 GB:
+
+| Variant | native | DSpark | delta |
+| :-- | --: | --: | --: |
+| ternary | 8171 MiB | 16729 MiB | +8558 (2.05x) |
+| 1-bit | 4965 MiB | 13372 MiB | +8407 (2.69x) |
+
+The dominant term is not weights. It is the drafter's compute buffers
+(2432 MiB device + 2752 MiB host), because the fork raises the draft
+context's batch to the full context -- it logs `draft-dspark: raising
+draft ctx n_batch 2048 -> 16388 (full-context staging + block)`. That is
+why the overhead scales with `-c`.
+
+Two non-obvious contributions land on the *target*, not the drafter: its
+recurrent-state buffer grows 149.62 -> 748.12 MiB and its compute buffer
+138.02 -> 863.64 MiB, together ~1.3 GB, because block verification needs
+more GDN state slots.
+
+### This changes the Phase 3 plan for Orin Nano Super
+
+Measured totals by context (MiB):
+
+| config | 2048 | 4096 | 8192 | 16384 |
+| :-- | --: | --: | --: | --: |
+| ternary native | 7247 | 7379 | 7643 | 8171 |
+| ternary DSpark | 10988 | 11713 | 13257 | 16729 |
+| 1-bit native | 4041 | 4173 | 4437 | 4965 |
+| 1-bit DSpark | 7631 | 8355 | 9899 | 13372 |
+
+The directive assumed 1-bit + drafter fits an 8 GB Orin Nano Super and
+ternary + drafter is tight. Measured, **neither DSpark configuration
+fits**: the cheapest wants 7631 MiB on a device that must also hold the
+OS. Ternary native is marginal at best even at ctx 2048. Only 1-bit
+native fits comfortably (4041-4437 MiB).
+
+The blocker is the full-context drafter staging buffer, not the weights.
+Sizing that buffer to the draft block rather than the whole context is
+what would make DSpark viable on 8 GB, and it is a concrete target for
+this repo's own engine. Full detail in `results/memory.txt`.
 
 ### Power is measurable via tegrastats
 
