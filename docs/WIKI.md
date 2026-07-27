@@ -483,6 +483,13 @@ Neither `q1_0` nor `q2_0` is in that list, nor in the MMVQ gate at line
 710, so Bonsai's formats take the float path regardless of compiler
 support -- while IQ1_S, a harder format, gets integer dot.
 
+**A fourth and fifth gate turned up later.** Beyond the toolchain and
+shader-generator gates, the runtime requires an explicit per-type
+`ggml_vk_create_pipeline` call (`ggml-vulkan.cpp` ~4655), and the shader
+requires the type to fall in a `K_PER_ITER` size class or it hits
+`#error unimplemented`. Four gates, found one at a time, each while
+believing the previous one was the last.
+
 **Generalizable:** a capability needs every gate on its path open.
 Finding and opening one gate proves nothing about the others, and the
 satisfying feeling of having fixed "the" blocker is exactly when to go

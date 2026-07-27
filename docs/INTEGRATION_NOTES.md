@@ -93,6 +93,52 @@ So the integration needs **no repack, no new weight layout, no on-disk
 change** -- only `unpack_gguf()` plus the type added to the three gates.
 Copy the function verbatim; it is tested.
 
+### ATTEMPTED END TO END -- and there is a THIRD gate
+
+The integration was implemented in the fork and it does not yet work.
+`patches/0003-WIP-vulkan-q2_0-mmvq.patch` holds it; the fork itself has
+been reverted and re-verified correct.
+
+**A third gate exists that none of the earlier analysis found.** Even
+with the shader generated and the type in the shader-generator lists, the
+runtime never creates a pipeline for it. Registration is explicit, per
+type, in `ggml-vulkan.cpp` (~line 4655):
+
+```
+pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_0][i]
+```
+
+and the set covers Q4_0..Q8_0, the k-quants, mxfp4 and iq1_s/m -- not
+Q2_0. So the gate list is:
+
+1. toolchain -- glslc implements `GL_EXT_integer_dot_product`  DONE
+2. shader-gen -- type in the MMVQ/MMQ lists                    DONE
+3. runtime -- an explicit `ggml_vk_create_pipeline` call        DONE
+4. `K_PER_ITER` -- the type must fall in a size class           DONE
+
+All four are now open, and the path demonstrably dispatches: adding the
+registration changed the output. It changed it to **degenerate repetition
+of the prompt**, so the index arithmetic is wrong.
+
+**Where the error must be.** The standalone shader is validated
+(4.783e-06) and its extraction is byte-for-byte the same, so
+`unpack_gguf` is not the problem. What differs is the addressing:
+
+```glsl
+data_a_packed32[ib_a / 4].qs[(ib_a % 4) * 2 + iqs]
+```
+
+This assumes `ib_a` is a virtual block index in units of 32 quants and
+that `iqs` selects one of the two 16-quant halves. That was inferred from
+Q2_K, which calls `repack4(ib_a, iqs * 4)` and internally does
+`iqs_k = (ib % 8) * 8 + iqs` -- a scaling that does not obviously
+compose the way assumed. **The next attempt should instrument `iqs`
+directly rather than infer it**, e.g. by writing `ib_a` and `iqs` to the
+output buffer from a debug shader, which settles it in one run.
+
+Everything else -- extraction, bias correction, gate sites, size class --
+is now known good or known located. This is the last unknown.
+
 ### Bias correction, already derived
 
 Q2_0 codes are `{0,1,2,3}` for `{-1,0,1,2}`; Q1_0 bits are `{0,1}` for
