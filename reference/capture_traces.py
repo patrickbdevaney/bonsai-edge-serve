@@ -15,6 +15,13 @@ per workload prompt at temperature 0:
 Timing is also recorded, but timings are NOT part of the correctness gate --
 they are the Milestone 0 measurement.
 
+IMPORTANT -- gate the SAME mode against the same mode: native captures
+against native captures, DSpark against DSpark. Native-vs-DSpark is not a
+valid gate on this fork. Measured on Thor, DSpark output diverges from
+native greedy output at temperature 0, and DSpark captures carry
+placeholder logprobs (0.0) for every drafted token. See
+docs/METHODOLOGY.md.
+
 Usage:
     # server must already be running (see serve_reference.sh)
     python3 capture_traces.py --label ternary-native --out ../results/traces/thor-ternary-native.json
@@ -157,6 +164,32 @@ def cmd_compare(args):
     if not shared:
         sys.exit("no overlapping trace ids")
 
+    # The server reports logprob 0.0 as a placeholder for tokens that came
+    # back through the DSpark draft path -- only the first, non-drafted
+    # token of a request carries a real value. Comparing drift against such
+    # a capture measures the placeholder, not numerics, so detect it and
+    # fall back to a token-only comparison.
+    # Not every token is a placeholder: where a draft was rejected, the
+    # target produces the token and a real logprob comes back. So test the
+    # fraction that are exactly 0.0. A genuine logprob of exactly 0.0 means
+    # probability exactly 1.0, which does not occur in practice, so even a
+    # modest fraction of them indicates the placeholder path.
+    def is_placeholder(cap, frac=0.2):
+        lps = [t.get("logprob") for tr in cap["traces"].values()
+               for t in tr["tokens"][1:]]
+        real = [x for x in lps if x is not None]
+        if not real:
+            return False
+        return (sum(1 for x in real if x == 0.0) / len(real)) > frac
+
+    ph_a, ph_b = is_placeholder(a), is_placeholder(b)
+    drift_valid = not (ph_a or ph_b)
+    if not drift_valid:
+        which = " and ".join(n for n, p in ((a["label"], ph_a), (b["label"], ph_b)) if p)
+        print(f"note: {which} reports placeholder logprobs for drafted tokens;")
+        print("      comparing token sequences only, drift is not meaningful here.")
+        print()
+
     worst_drift = 0.0
     n_divergent = 0
     for tid in shared:
@@ -189,12 +222,15 @@ def cmd_compare(args):
 
     print()
     print(f"divergent traces: {n_divergent}/{len(shared)}")
-    print(f"worst top-1 logprob drift: {worst_drift:.5f}")
-    if n_divergent == 0 and worst_drift <= args.tol:
-        print(f"GATE PASS (tolerance {args.tol})")
-        return 0
-    print(f"GATE FAIL (tolerance {args.tol})")
-    return 1
+    if drift_valid:
+        print(f"worst top-1 logprob drift: {worst_drift:.5f}")
+        ok = n_divergent == 0 and worst_drift <= args.tol
+        print(f"GATE {'PASS' if ok else 'FAIL'} (tolerance {args.tol})")
+        return 0 if ok else 1
+
+    ok = n_divergent == 0
+    print(f"GATE {'PASS' if ok else 'FAIL'} (token comparison only)")
+    return 0 if ok else 1
 
 
 def main():

@@ -1,0 +1,60 @@
+Resident memory on Jetson Thor -- measurements and what they mean
+================================================================
+
+Device: NVIDIA Thor, CC 11.0, 122 GiB unified CPU+GPU memory pool.
+Engine: PrismML llama.cpp fork b9597-7529fdaaf, CUDA build (ARCHS = 1100).
+
+TRUSTED (native / single model)
+-------------------------------
+Peak RSS (VmHWM) of llama-server, weights mmap'd (default):
+
+    config              peak RSS      model file    result
+    ternary-native      7158 MiB      7.17 GB       matches
+    onebit-native       3952 MiB      3.80 GB       matches
+
+Both land on their GGUF size, which is the validation that this metric
+measures the weights and not the machine. These are the numbers
+published in the README.
+
+NOT TRUSTED (DSpark / two models)
+---------------------------------
+The same metric with the drafter attached is not additive:
+
+    config              peak RSS   vs native   drafter est. by server
+    ternary-dspark      7180 MiB      +22 MiB          1802 MiB
+    onebit-dspark       6719 MiB    +2767 MiB          1802 MiB
+
+Both servers log the identical "estimated memory usage of draft model is
+1802.06 MiB" and both load the drafter successfully (54.0% / 61.6%
+acceptance measured), so the +22 MiB figure is an artifact, not a real
+difference. With two mmap'd models the kernel reclaims pages from one
+mapping while faulting in the other, so peak RSS stops being a sum.
+
+The README therefore reports the server's own 1802 MiB drafter estimate
+for DSpark rows, labelled as an estimate, rather than publishing a
+measured number known to be wrong.
+
+METHODS THAT DO NOT WORK HERE (recorded so they are not retried)
+---------------------------------------------------------------
+1. nvidia-smi          -- reports "Not Supported" for memory usage on
+                          Jetson; there is no separate GPU pool.
+2. host MemTotal
+   minus MemAvailable  -- measures the whole machine. Reported ~28 GiB
+                          for BOTH the 7.2 GB and the 3.8 GB model,
+                          which is what exposed it as useless here.
+3. cudaMemGetInfo      -- moved only ~450 MiB for a 7.2 GB model. The
+                          weights are unified-memory pages, not a
+                          discrete device allocation it can see.
+4. --no-mmap + RSS     -- ternary drops to 796 MiB, because the weights
+                          are copied into CUDA allocations that never
+                          appear in process RSS.
+5. VmRSS (instant)     -- read 800 MiB against a true 7.0 GiB footprint;
+                          the kernel evicts untouched mmap pages.
+
+OPEN ITEM
+---------
+A trustworthy two-model footprint number on unified memory still needs a
+different approach -- most likely summing the backend buffer sizes ggml
+allocates internally, rather than observing the process from outside.
+This matters for the Orin Nano Super target (8 GB), where whether
+ternary + drafter fits is the whole question.

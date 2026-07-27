@@ -19,11 +19,53 @@ backend here. The gate is a two-part comparison, implemented in
    reported alongside the token match so drift can be tracked rather than
    hidden. Default tolerance `0.05`.
 
-Speculative decoding is lossless by construction: verification preserves
-the target distribution exactly. So a DSpark run and a native run of the
-same target model must produce the *same* tokens at temperature 0. That
-makes native-vs-DSpark trace comparison a self-check on the drafting
-implementation, independent of any cross-backend comparison.
+**Gate the same mode against the same mode**: a candidate backend's
+native capture against the fork's native capture, its DSpark capture
+against the fork's DSpark capture. Native-vs-DSpark is *not* a valid
+gate here, for two measured reasons.
+
+### DSpark output diverges from native greedy output at temperature 0
+
+The expectation going in was that speculative decoding is lossless --
+verification preserves the target distribution -- so at `temperature 0,
+top_k 1` a DSpark run and a native run of the same target should emit
+identical tokens. On Thor they do not.
+
+Measured, ternary Q2_0, workload prompt `code/cuda-reduce`, 128 tokens,
+each request the *first* on a freshly started server:
+
+```
+native: for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+dspark: for (int offset = warpSize / 2;   offset > 0; offset /= 2)
+```
+
+The divergence is reproducible, lands at the same character offset (317),
+and is not an artifact of trace capture: native output is byte-identical
+with and without `n_probs` requested, and both native and DSpark are
+individually deterministic across repeated runs. Divergence appeared in
+5/16 ternary and 6/16 1-bit trace pairs.
+
+Note this was nearly missed. A first check at 64 tokens on a shortened
+prompt showed an exact match -- the divergence simply had not occurred
+yet by that point. Losslessness checks need to run long enough to reach
+one.
+
+What this does *not* mean: it does not invalidate the throughput numbers,
+and it does not show the DSpark output is worse -- both continuations
+above are reasonable code. What it means is that on this fork, at this
+architecture, DSpark is not token-identical to native decoding, so
+native output cannot be used as the oracle for a DSpark run. Whether this
+is Thor-specific numerics or general to the fork is untested; it needs a
+second device to separate those.
+
+### DSpark captures report placeholder logprobs
+
+In a DSpark capture every token after the first carries `logprob = 0.0`.
+Only the first token of a request -- the one not produced through the
+draft path -- has a real value. Any logprob-drift comparison against a
+DSpark capture is therefore measuring the placeholder. `--compare`
+detects this and falls back to a token-only comparison rather than
+reporting a meaningless drift figure.
 
 ## Benchmark protocol
 
@@ -42,6 +84,16 @@ implementation, independent of any cross-backend comparison.
 - Acceptance is pooled over all tokens in a workload
   (`sum(accepted) / sum(drafted)`), not averaged over per-request rates,
   so long requests weigh proportionally.
+- Acceptance uses the fork's own definition, so it is directly comparable
+  to the published figures. In `server-context.cpp` the accepted counter
+  is incremented as `n_draft_accepted += ids.size() - 1`: the `- 1` drops
+  the free bonus token that verification always yields, leaving only
+  genuinely accepted *draft* tokens. The server logs
+  `n_draft_accepted / n_draft_total` itself, which is the same ratio this
+  harness reports. This also reconciles the model card's two numbers: at
+  draft depth `k = 4` with ~69% acceptance, ~2.8 draft tokens are accepted
+  per step, plus the bonus token gives the quoted accepted length
+  `tau ~ 3.7`.
 - Decode tok/s, prefill tok/s and token counts are taken from the
   server's own `timings` object. TTFT is measured client-side as
   wall-clock to the first streamed content chunk, which includes
@@ -97,15 +149,43 @@ needed; that was verified directly. It simply is not needed today.
 | gcc | 13.3.0 |
 | Host | 14 cores, 122 GiB unified memory |
 
-### Memory reporting on Jetson is not `nvidia-smi`
+### Measuring resident memory on unified memory is its own problem
 
-`nvidia-smi` reports `Not Supported` for memory usage on Thor: CPU and
-GPU share one physical pool, so there is no separate GPU memory figure to
-report. The bench harness records host memory from `/proc/meminfo`
-(`MemTotal - MemAvailable`) as the meaningful resident-footprint number,
-and leaves the GPU field null. Any cross-device memory column must
-compare like with like -- a discrete-GPU row's "GPU memory" and a
-Jetson row's "resident memory" are different measurements.
+Four obvious methods all give wrong answers on Thor, because the GPU
+shares the system memory pool and weights are mmap'd:
+
+| Method | Result for the 7.2 GB ternary build | Why it fails |
+| :-- | :-- | :-- |
+| `nvidia-smi` | "Not Supported" | no separate GPU pool to report |
+| host `MemTotal - MemAvailable` | ~28 GiB | measures the whole machine; read the same for the 3.8 GB model |
+| `cudaMemGetInfo` delta | ~450 MiB | weights are unified-memory pages, not a device allocation |
+| `--no-mmap` + RSS | 796 MiB | weights go into CUDA allocations absent from RSS |
+| instantaneous `VmRSS` | ~800 MiB | kernel evicts untouched mmap pages |
+
+What works for a single model is the server process's **peak** RSS
+(`VmHWM`), which captures every weight page actually touched: 7158 MiB
+for the 7.17 GB ternary build and 3952 MiB for the 3.80 GB 1-bit build,
+both matching their GGUF. That agreement is the validation.
+
+It stops working once the drafter is attached. With two mmap'd models the
+kernel reclaims pages from one mapping while faulting in the other, so
+peak RSS is no longer a sum: the ternary DSpark config measured only
++22 MiB over native while the 1-bit config measured +2767 MiB, despite
+both servers logging the same `estimated memory usage of draft model is
+1802.06 MiB` and both demonstrably running the drafter. The README
+reports the server's own estimate for DSpark rows rather than a measured
+number known to be wrong. Full detail in `results/memory.txt`.
+
+A trustworthy two-model footprint on unified memory remains an open item,
+and it matters: whether ternary + drafter fits the 8 GB Orin Nano Super
+is exactly the question Phase 3 has to answer.
+
+### Power is measurable via tegrastats
+
+`tegrastats` exposes per-rail power on Jetson (`VDD_GPU`,
+`VDD_CPU_SOC_MSS`, `VIN_SYS_5V0`, `VIN`), which is what the Phase 6
+energy-per-token column will be built from. Idle GPU draw observed around
+2.4 W, whole-board `VIN` around 23 W under light load.
 
 ## Vulkan
 

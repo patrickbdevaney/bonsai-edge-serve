@@ -32,8 +32,8 @@ This repo owns those three gaps.
 | Phase | What | State |
 | :-- | :-- | :-- |
 | 0 | Environment + models on Thor | done |
-| 1 | Reference stack + captured oracle traces | in progress |
-| 1 | **Milestone 0** -- first Thor numbers, reference fork | pending measurement |
+| 1 | Reference stack + captured oracle traces | done |
+| 1 | **Milestone 0** -- first Thor numbers, reference fork | **done, below** |
 | 2 | CUDA engine, DSpark fused into a single launch | not started |
 | 3 | Cross-arch CUDA targets (sm_87 Orin, sm_86, sm_120/121) | not started |
 | 4 | Vulkan backend | not started |
@@ -45,30 +45,74 @@ measured on the hardware named in the row. Nothing here is estimated.
 
 ## Milestone 0 -- Jetson Thor reference numbers
 
-*Pending measurement. The harness and oracle capture are in place; the
-table below is populated by `reference/run_milestone0.sh` and will be
-filled from `results/bench/*.json`.*
+**First published Bonsai-27B numbers on Jetson Thor (sm_110), closing
+GAP 1.** Measured from the PrismML reference fork alone -- no custom
+engine involved.
 
 Device: NVIDIA Thor, CC 11.0, driver 580.00, CUDA 13.0, 122 GiB unified
-memory. Engine: PrismML `llama.cpp` fork, `prism` branch, built
-`110-real`. No custom engine involved -- this measures the reference
-implementation only.
+memory. Engine: PrismML `llama.cpp` fork `b9597-7529fdaaf`, CUDA build
+(`ARCHS = 1100`), `-fa on -c 16384 -np 1`, draft depth 4. Decode is the
+median over 8 prompts per workload class, 128 tokens each, temperature 0,
+no prefix reuse. Reproduce with `reference/run_milestone0.sh`; raw
+artifacts in `results/`.
 
-| Variant | Mode | Workload | tok/s | TTFT (s) | Acceptance | Resident |
-| :-- | :-- | :-- | --: | --: | --: | --: |
-| ternary Q2_0 | native | code | | | n/a | |
-| ternary Q2_0 | native | prose | | | n/a | |
-| ternary Q2_0 | DSpark | code | | | | |
-| ternary Q2_0 | DSpark | prose | | | | |
-| 1-bit Q1_0 | native | code | | | n/a | |
-| 1-bit Q1_0 | native | prose | | | n/a | |
-| 1-bit Q1_0 | DSpark | code | | | | |
-| 1-bit Q1_0 | DSpark | prose | | | | |
+| Variant | Mode | Workload | tok/s | TTFT (s) | Prefill tok/s | Acceptance | Resident |
+| :-- | :-- | :-- | --: | --: | --: | --: | --: |
+| ternary Q2_0 | native | code | 16.77 | 0.491 | 120.2 | n/a | 7158 MiB |
+| ternary Q2_0 | native | prose | 16.97 | 0.439 | 79.7 | n/a | 7158 MiB |
+| ternary Q2_0 | DSpark | code | **24.85** | 0.523 | 107.7 | 54.0% | +1802 MiB* |
+| ternary Q2_0 | DSpark | prose | 23.23 | 0.477 | 69.1 | 43.3% | +1802 MiB* |
+| 1-bit Q1_0 | native | code | 19.03 | 0.424 | 149.1 | n/a | 3952 MiB |
+| 1-bit Q1_0 | native | prose | 18.98 | 0.380 | 100.3 | n/a | 3952 MiB |
+| 1-bit Q1_0 | DSpark | code | **33.24** | 0.464 | 128.3 | 61.6% | +1802 MiB* |
+| 1-bit Q1_0 | DSpark | prose | 26.25 | 0.418 | 82.7 | 51.4% | +1802 MiB* |
+
+\* Native footprints are measured (peak RSS, matching each GGUF's size).
+The drafter figure is the **server's own estimate**, not a measurement:
+peak RSS is not additive across two mmap'd models, so no trustworthy
+measured two-model number exists yet. See `results/memory.txt`.
+
+### DSpark speedup on Thor
+
+| Variant | Workload | Native | DSpark | Speedup | Acceptance |
+| :-- | :-- | --: | --: | --: | --: |
+| ternary Q2_0 | code | 16.77 | 24.85 | **1.48x** | 54.0% |
+| ternary Q2_0 | prose | 16.97 | 23.23 | 1.37x | 43.3% |
+| 1-bit Q1_0 | code | 19.03 | 33.24 | **1.75x** | 61.6% |
+| 1-bit Q1_0 | prose | 18.98 | 26.25 | 1.38x | 51.4% |
+
+### What these numbers say
+
+**DSpark never goes negative on Thor.** The published concern is that on
+prose, where acceptance falls to ~51%, the 1-bit target's weights are
+small enough that drafting overhead can make speculation a net loss. On
+Thor it does not: the worst case measured is still 1.37x, and 1-bit on
+prose -- the exact regime flagged as risky -- returns 1.38x at 51.4%
+acceptance. The adaptive draft-disable heuristic planned for Phase 2 has
+no regime to trigger in on this device, though it may still on Orin.
+
+**The speedup ratios are larger than H100's published 1.34x, and that is
+a statement about Thor being slower, not better.** Raw throughput is not
+close: 16.8 tok/s here against H100's published 98.0 tok/s on ternary
+native, roughly 6x apart. PrismML's own model card notes H100 at batch 1
+is bound by kernel-launch and synchronization latency rather than weight
+bandwidth -- there is simply less per-step cost for speculation to
+amortize. Thor's slower, bandwidth-bound decode gives drafting more to
+hide behind, so the *ratio* is higher while the absolute number is far
+lower.
+
+**Acceptance is below the published figures** (54.0% vs ~69.2% ternary on
+code) but this is not a device comparison. Acceptance is a property of
+the drafter and the token distribution, not the hardware; our workloads
+are raw completions rather than PrismML's chat-templated thinking-mode
+benchmark, and prompt content moves acceptance substantially. The
+code-vs-prose *gap* reproduces clearly in both variants, which is the
+behaviour that matters.
 
 ### Published baselines for comparison
 
-From the model cards, measured by PrismML on other hardware. These are
-context, not this repo's results:
+From the model cards, measured by PrismML on other hardware. Context, not
+this repo's results:
 
 | Platform | Variant | Native tok/s | + DSpark | Speedup |
 | :-- | :-- | --: | --: | --: |
@@ -77,10 +121,25 @@ context, not this repo's results:
 | Apple M5 Max | ternary | 44.0 | not enabled | -- |
 | Apple M5 Pro | ternary | 26.2 | not enabled | -- |
 
-Reported DSpark acceptance: ~69.2% ternary, 74.6-78.6% 1-bit on code,
-falling to ~51% on prose -- where the 1-bit target's weights are small
-enough that drafting overhead can make DSpark a net *loss*. Both regimes
-are measured here; see `docs/METHODOLOGY.md`.
+### Correctness finding: DSpark is not token-identical to native
+
+Speculative decoding is expected to be lossless, so at temperature 0 a
+DSpark run should emit exactly the tokens a native run emits. **On Thor
+it does not.** The divergence is reproducible, occurs on a freshly
+started server's first request, and is not an artifact of trace capture:
+
+```
+native: for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+dspark: for (int offset = warpSize / 2;   offset > 0; offset /= 2)
+```
+
+It affected 5/16 ternary and 6/16 1-bit trace pairs. This does not
+invalidate the throughput above and does not indicate worse output --
+both continuations are reasonable. It does mean native output cannot
+serve as the oracle for a DSpark run, so every backend gate here compares
+like mode against like mode. Whether the cause is Thor-specific numerics
+or general to the fork needs a second device to separate.
+Detail in `docs/METHODOLOGY.md`.
 
 ## Layout
 
@@ -91,7 +150,10 @@ reference/     wrappers around the PrismML fork -- the correctness oracle
   capture_traces.py      capture + compare per-token logprob traces
   run_milestone0.sh      full variant x mode x workload sweep
 bench/         backend-agnostic harness
-  bench.py               tok/s, TTFT, acceptance %, memory
+  bench.py               tok/s, TTFT, acceptance %
+  measure_memory.sh      resident footprint (peak RSS; see methodology)
+  gpu_mem.cu             cudaMemGetInfo helper, since nvidia-smi is blind on Jetson
+  render_table.py        generates the results tables from run artifacts
   workloads/             code (high-accept) AND prose (low-accept)
 cuda/          primary backend, developed on Thor      [not started]
 vulkan/        hardware-agnostic GPU backend           [not started]

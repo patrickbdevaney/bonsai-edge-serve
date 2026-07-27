@@ -24,3 +24,4 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+bench/gpu_mem
