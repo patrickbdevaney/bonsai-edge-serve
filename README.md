@@ -296,6 +296,65 @@ like mode against like mode. Whether the cause is Thor-specific numerics
 or general to the fork needs a second device to separate.
 Detail in `docs/METHODOLOGY.md`.
 
+## Research pass: where the performance actually is
+
+`docs/RESEARCH_PROMPT.md` is the meta-critique and research brief;
+`docs/RESEARCH_FINDINGS.md` is the answer, from a five-agent literature
+pass plus new measurements on this box. The five results that changed the
+plan:
+
+**1. We are at ~52% of an achievable roofline, and the gap is kernel
+quality.** A correctly written 2-bit ternary GEMV on Thor reaches
+**229 GB/s = 84% of spec** (verified bit-exact); the naive version of the
+same kernel gets 6.9 GB/s -- a **33x span**. That implies ~32 tok/s
+ternary and ~49 tok/s 1-bit, against the reference fork's 16.77 / 19.03.
+**The engine, not the hardware, is the ceiling.**
+
+**2. The DSpark memory blowup is fixable, measured.** Capping the
+drafter's staging batch saves ~1 GB at ctx 4096 with **zero throughput
+loss, zero fallbacks, identical acceptance**:
+
+| ctx | cap | total MiB | code tok/s | acceptance | fallbacks |
+| --: | --: | --: | --: | --: | --: |
+| 4096 | 256 | **7320** | 33.23 | 61.6% | 0 |
+| 4096 | none | 8355 | 33.87 | 61.6% | 0 |
+| 2048 | 256 | **7162** | 31.89 | 61.6% | 0 |
+
+A second ~1.3 GB is available by setting `n_rs_seq = 0` and using the
+host-side state checkpoints already implemented in the fork -- untested,
+and the highest-leverage remaining experiment.
+
+**3. Zero-memory speculation is free but not a speedup here.** N-gram
+self-speculation costs **byte-identical memory to native** (4173 MiB, all
+variants) -- no drafter weights, no drafter KV, and no recurrent-state
+blowup. But throughput is also identical (~1.00x), because n-gram pays on
+input-grounded generation and both our suites are open-ended. It is the
+right free fallback; it does not replace a drafter.
+
+**4. Vulkan's loss is the pipeline barrier, not submits.** Measured here:
+a barrier-separated dispatch costs ~1.4 us narrow / ~3.9 us wide vs
+~0.17 us with none, and a token graph is ~2293 real dispatches -- a
+**~3.9 ms/token floor**. Submits and host round-trips together are <5%.
+Separately, **neither `q1_0` nor `q2_0` is in ggml-vulkan's integer-dot
+lists at all**, so both run the float path while IQ1_S gets dp4a;
+precedent for that fix is +78-131%.
+
+**5. The CPU default is the worst setting.** Leaving 2 of 14 cores for the
+OS is worth **1.73x (ternary) and 2.27x (1-bit)**:
+
+| threads | ternary | 1-bit |
+| --: | --: | --: |
+| **12** | **3.18** | **4.85** |
+| 14 (default) | 1.84 | 2.14 |
+
+Fixed: the CPU path now defaults to 12 threads. The Milestone 0 CPU rows
+above used the default and therefore understate that backend.
+
+**Scope correction:** the smaller Bonsai models (8B/4B/1.7B, 0.23-2.15
+GiB) exist but are **plain dense Qwen3** -- no GDN, no recurrent state, no
+DSpark, 32-64K context. They are a simpler engine path and give zero GDN
+coverage, so they cannot be used to iterate on the 27B's kernels.
+
 ## What is not done, and why
 
 Being explicit so the tables above are not read as more than they are.

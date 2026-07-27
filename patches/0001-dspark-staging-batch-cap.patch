@@ -1,0 +1,40 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 45f668d7c..44c744d29 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1045,11 +1045,34 @@ private:
+                 // If the drafter's batch cannot fit ctx_len + block_size, the
+                 // round is skipped ("round needs N tokens > n_batch") and
+                 // speculation silently degrades to plain AR.
+-                const uint32_t n_batch_dspark = cparams.n_ctx + (block_size > 0 ? block_size : 64);
++                uint32_t n_batch_dspark = cparams.n_ctx + (block_size > 0 ? block_size : 64);
++
++                // EXPERIMENT (bonsai-edge-serve): cap the staging batch.
++                // Sizing it to n_ctx reserves for a worst case that only
++                // occurs when the drafter must ingest a long history in one
++                // round; in steady-state decode ctx_len is just the tokens
++                // the drafter has not yet absorbed. The cap trades that
++                // worst case for memory: a round needing more than the cap
++                // is skipped and that sequence falls back to plain AR.
++                // Note the fallback is sticky -- a skipped round does not
++                // advance the drafter's cache position -- so a cap below the
++                // prompt length disables speculation for that request.
++                if (const char * cap_env = getenv("BONSAI_DSPARK_MAX_BATCH")) {
++                    const uint32_t cap = (uint32_t) atoi(cap_env);
++                    const uint32_t floor_b = (block_size > 0 ? block_size : 64) + 1;
++                    if (cap >= floor_b && cap < n_batch_dspark) {
++                        SRV_INF("draft-dspark: capping draft ctx n_batch %u -> %u (BONSAI_DSPARK_MAX_BATCH)\n",
++                                n_batch_dspark, cap);
++                        n_batch_dspark = cap;
++                    }
++                }
++
+                 if (cparams.n_batch < n_batch_dspark) {
+                     SRV_INF("draft-dspark: raising draft ctx n_batch %u -> %u (full-context staging + block)\n",
+                             cparams.n_batch, n_batch_dspark);
+                     cparams.n_batch = n_batch_dspark;
++                } else if (cparams.n_batch > n_batch_dspark) {
++                    cparams.n_batch = n_batch_dspark;
+                 }
+                 if (cparams.n_ubatch < cparams.n_batch) {
+                     cparams.n_ubatch = cparams.n_batch;

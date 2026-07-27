@@ -60,6 +60,12 @@ case "$ENGINE" in
                 [ -x "$BIN" ] || BIN="$FORK_DIR/build/bin/llama-server"
                 NGL=0
                 NGLD=0
+                # Leave cores for the OS. Measured on Thor (14 cores),
+                # decode collapses if every core is taken:
+                #   ternary  t=12 3.18 tok/s  vs  t=14 1.84  (1.73x)
+                #   1-bit    t=12 4.85 tok/s  vs  t=14 2.14  (2.27x)
+                # The default (nproc) is therefore the worst setting.
+                CPU_THREADS="${CPU_THREADS:-12}"
                 ;;
             *) echo "unknown backend: $BACKEND (want: cuda|vulkan|cpu)" >&2; exit 2 ;;
         esac
@@ -89,6 +95,27 @@ ARGS=(
     --host 0.0.0.0 --port "$PORT"
 )
 
+if [ -n "${CPU_THREADS:-}" ]; then
+    ARGS+=(-t "$CPU_THREADS")
+fi
+
+# N-gram self-speculation: no drafter model, no extra weights, and
+# need_n_rs_seq() returns 0 for these types so the target's recurrent-state
+# buffer does NOT get the 5x block-verification blowup a drafter causes.
+# That makes them the only speculation that is plausibly free on 8 GB.
+case "$MODE" in
+    ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|ngram-cache)
+        ARGS+=(--spec-type "$MODE" --spec-draft-n-max "$DRAFT_N_MAX")
+        echo "==> $BIN"
+        echo "==> variant=$VARIANT mode=$MODE engine=$ENGINE backend=$BACKEND ngl=$NGL port=$PORT ctx=$CTX"
+        if [ -n "${EXTRA_ARGS:-}" ]; then
+            # shellcheck disable=SC2206
+            ARGS+=($EXTRA_ARGS)
+        fi
+        exec "$BIN" "${ARGS[@]}"
+        ;;
+esac
+
 if [ "$MODE" = "dspark" ]; then
     [ -f "$DRAFT" ] || { echo "drafter not found: $DRAFT" >&2; exit 1; }
     ARGS+=(
@@ -98,7 +125,7 @@ if [ "$MODE" = "dspark" ]; then
         -ngld "$NGLD"
     )
 elif [ "$MODE" != "native" ]; then
-    echo "unknown mode: $MODE (want: native|dspark)" >&2; exit 2
+    echo "unknown mode: $MODE (want: native|dspark|ngram-*)" >&2; exit 2
 fi
 
 # EXTRA_ARGS passes through anything else, e.g. EXTRA_ARGS="-lv 10" to get

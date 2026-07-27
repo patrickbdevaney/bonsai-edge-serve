@@ -1,0 +1,44 @@
+===== A. N-GRAM SELF-SPECULATION (onebit, ctx4096, CUDA) =====
+MEM | onebit | native | 3978 | 195 | 4173 |
+PERF native   -> median 18.61 tok/s, TTFT 0.442s, acceptance n/a (no drafter)
+PERF native   -> median 18.62 tok/s, TTFT 0.405s, acceptance n/a (no drafter)
+MEM | onebit | ngram-simple | 3978 | 195 | 4173 |
+PERF ngram-simple   -> median 18.51 tok/s, TTFT 0.440s, acceptance 35.9%
+PERF ngram-simple   -> median 18.85 tok/s, TTFT 0.380s, acceptance 100.0%
+MEM | onebit | ngram-map-k | 3978 | 195 | 4173 |
+PERF ngram-map-k   -> median 18.85 tok/s, TTFT 0.428s, acceptance n/a (no drafter)
+PERF ngram-map-k   -> median 18.85 tok/s, TTFT 0.372s, acceptance 100.0%
+MEM | onebit | ngram-cache | 3978 | 195 | 4173 |
+PERF ngram-cache   -> median 18.83 tok/s, TTFT 0.415s, acceptance 100.0%
+PERF ngram-cache   -> median 18.84 tok/s, TTFT 0.382s, acceptance n/a (no drafter)
+===== B. CPU THREAD SWEEP =====
+CPUTHREADS ternary t=8 tok/s=2.33
+CPUTHREADS ternary t=10 tok/s=2.79
+CPUTHREADS ternary t=12 tok/s=3.18
+CPUTHREADS ternary t=14 tok/s=1.84
+CPUTHREADS onebit t=8 tok/s=3.64
+CPUTHREADS onebit t=10 tok/s=4.28
+CPUTHREADS onebit t=12 tok/s=4.85
+CPUTHREADS onebit t=14 tok/s=2.14
+===== EXPERIMENTS DONE =====
+
+READING
+-------
+N-gram self-speculation: memory is byte-identical to native (4173 MiB)
+in every variant, confirming zero overhead -- no drafter weights, no
+drafter KV, and need_n_rs_seq() == 0 so no recurrent-state blowup.
+Throughput is also ~identical (18.5-18.9 vs 18.6 native), i.e. ~1.00x.
+That is the expected result for these workloads: n-gram speculation pays
+on input-grounded generation (summarize, edit, rewrite) where the output
+copies from the prompt, and our code/prose suites are open-ended
+generation. Acceptance figures here are noisy because draft_n is tiny
+and sporadic when few n-gram hits occur.
+
+So n-gram is the right 8 GB fallback -- it costs nothing and cannot hurt
+-- but it is not a speedup on open-ended work, and it does not replace a
+drafter.
+
+CPU threads: the default (nproc = 14) is the worst setting on this box.
+Leaving 2 cores for the OS is worth 1.73x on ternary and 2.27x on 1-bit.
+Single 48-token requests, so noisier than the full bench suite, but the
+trend is unambiguous and matches the research prediction.

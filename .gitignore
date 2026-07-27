@@ -25,3 +25,4 @@ venv/
 .idea/
 .DS_Store
 bench/gpu_mem
+bench/bandwidth
