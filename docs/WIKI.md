@@ -178,6 +178,36 @@ and, for ROWS>1, an uncoalesced per-row scale gather.
 Testing that diagnosis directly is what produced v5 (activations in
 shared memory), the only variant that beat v3.
 
+### K2b. Three ways of adding parallelism, all slower -- a design rule
+
+After K2, two more attempts were made to widen or deepen the loop. Both
+lost, and together they settle the question:
+
+| Attempt | Idea | GB/s |
+| :-- | :-- | --: |
+| **v5** | 1 row/warp, activations in shared memory | **178.5** |
+| v6 | 128-bit `uint4` weight loads | 158.1 |
+| v7 | rows/warp *with* shared-memory activations | 168.1 / 138.0 / 133.6 |
+| v4 | rows/warp with global activations | 142.5 / 117.8 / 124.4 |
+
+**v6 is the one that pins the diagnosis.** Wide loads cut *weight* load
+instructions 4:1 and still cost 12%. That only makes sense if weight
+loads were never the constraint -- and they are not: 20 of every 21 loads
+in the inner loop are activations. Widening the 1 does nothing and costs
+register pressure.
+
+**v7 was the fair retest of row-blocking.** v4's version amortized
+*global* activation reads, so it could have been losing for that reason
+alone. With activations already in shared memory it still loses
+monotonically. Row-blocking is not defeated by the cost of the read it
+shares; it is defeated by occupancy and per-row scale gathers.
+
+**Design rule for this kernel: it is issue-bound and occupancy-sensitive,
+not latency-bound.** The one lever that worked reduced the *number of
+instructions per weight byte*. Every lever that added parallelism to hide
+latency made it worse. Standard GPU intuition ("more in flight is
+better") is backwards here.
+
 ### K3. The biased-encoding identity is the one thing that ports everywhere
 
 Store `u = t+1 in {0,1,2}` and use `sum w*x = sum u*x - sum x`. Identical
@@ -397,7 +427,7 @@ speculation to amortize. Always lead with absolute tok/s.
 | # | Question | Why it matters |
 | :-- | :-- | :-- |
 | Q1 | Is the temp-0 DSpark divergence Thor-specific or general? | Needs a second device. If general, it is a finding about the reference implementation. |
-| Q2 | Why can't we reproduce 229 GB/s? We get 177. | Ladder shape matches prediction; the gap is in a design detail not recoverable from the summary. |
+| Q2 | Why can't we reproduce 229 GB/s? We get 178.5. | Ladder shape matches prediction. The three obvious levers (wide loads, row-blocking with global and with shared activations) are now all tested and all lose, so the gap is not any of them. |
 | Q3 | Does rebuilding the fork with glslang >= 16 lift its Vulkan tok/s? | Directly testable; the backend currently has no integer-dot path. |
 | ~~Q4~~ | ~~What does `n_rs_seq = 0` cost in throughput?~~ | **ANSWERED: 59% of throughput. Strictly dominated -- see S6.** |
 | Q5 | Can factor buffering replace the 748 MiB rollback ring? | Literature reports 78% DRAM reduction, numerically exact. |

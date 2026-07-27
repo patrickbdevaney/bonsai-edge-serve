@@ -80,18 +80,53 @@ is a genuine streaming test). Full log in `../results/gemv-cuda.txt`.
 | Kernel | GB/s | % of 273 GB/s spec |
 | :-- | --: | --: |
 | v0 naive, scalar extract | 16.0 | 6% |
-| v1 + activations in smem | 12.5 | 5% |
-| v2 dp4a, GGUF layout | 167.9 | 61% |
-| v3 dp4a, bit-plane interleaved | 171.2 | 63% |
-| **v5 dp4a + activations in smem** | **177.2** | **65%** |
-| v4 2 rows/warp | 134.5 | 49% |
-| v4 4 rows/warp | 117.0 | 43% |
-| v4 8 rows/warp | 122.5 | 45% |
-| v4 Q1_0, 8 rows/warp | 100.1 | 37% |
+| v1 + activations in smem, scalar extract | 12.6 | 5% |
+| v2 dp4a, GGUF layout | 168.8 | 62% |
+| v3 dp4a, bit-plane interleaved | 170.3 | 62% |
+| **v5 dp4a + activations in smem** | **178.5** | **65%** |
+| v6 + 128-bit (`uint4`) weight loads | 158.1 | 58% |
+| v7 smem acts + 2 rows/warp | 168.1 | 62% |
+| v7 smem acts + 4 rows/warp | 138.0 | 51% |
+| v7 smem acts + 8 rows/warp | 133.6 | 49% |
+| v4 2 rows/warp (global acts) | 142.5 | 52% |
+| v4 4 rows/warp (global acts) | 117.8 | 43% |
+| v4 8 rows/warp (global acts) | 124.4 | 46% |
+| v4 Q1_0, 8 rows/warp | 102.5 | 38% |
 
-**11x from naive to best.** The dp4a step is the whole cliff (16 -> 168);
-the bit-plane repack adds 2%, and staging activations in shared memory
-adds another 3.5%.
+**11x from naive to best.** The dp4a step is the whole cliff (16 -> 169);
+the bit-plane repack adds ~1%, and staging activations in shared memory
+another ~5%. **v5 -- one row per warp, activations in shared memory --
+is the kernel to ship.**
+
+### Three ways of adding memory-level parallelism, all slower
+
+Everything tried to widen or deepen the loop lost, and the pattern is
+consistent enough to be a design rule for this kernel:
+
+| Attempt | Idea | Result |
+| :-- | :-- | --: |
+| v4 | rows/warp, activations in global | 142.5 -> 117.8 |
+| v6 | 128-bit `uint4` weight loads | 158.1 |
+| v7 | rows/warp, activations in **shared** | 168.1 -> 133.6 |
+
+v6 is the one that pins the diagnosis. Wide loads cut *weight* load
+instructions 4:1 -- and cost 12%. That only makes sense if weight loads
+were never the constraint: each 4-byte weight word needs four `A4[]`
+words plus one `ASUM16[]`, so **20 of every 21 loads in the inner loop
+are activations**. Widening the 1 does nothing and costs register
+pressure.
+
+v7 was the fair test of row-blocking, since v4's version was amortizing
+*global* activation reads and could have been losing for that reason
+alone. With the activations already in shared memory it still loses
+monotonically. So rows/warp is not being defeated by the cost of the read
+it shares -- it is defeated by what it costs in occupancy and per-row
+scale gathers.
+
+Conclusion: this kernel is **issue-bound and occupancy-sensitive**, not
+latency-bound. The lever that worked (v5) reduced the *number* of
+instructions per weight byte; every lever that added parallelism to hide
+latency made it worse.
 
 ### Two results that contradict the research brief
 

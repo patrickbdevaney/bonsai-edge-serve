@@ -161,6 +161,116 @@ __global__ void gemv_q2_v5(const uint32_t *__restrict__ W, const half *__restric
     if (lane == 0) out[row] = acc * da;
 }
 
+// ---------------------------------------------------------------- v7
+// The combination the diagnosis actually implies: activations in shared
+// memory AND several rows per warp.
+//
+// v4 tried rows-per-warp with activations in GLOBAL memory and lost. v5
+// showed the loop is bound by activation-read issue. So rows-per-warp
+// was being asked to amortize an expensive read; now that the read is a
+// cheap shared-memory hit, sharing it across ROWS rows should finally
+// pay -- each activation word is fetched once and used ROWS times.
+//
+// The per-row scale is also hoisted out of the dp4a chain: it changes
+// only every 8 words, and reloading it per row per word was part of what
+// made v4 slow.
+template <int ROWS>
+__global__ void gemv_q2_v7(const uint32_t *__restrict__ W, const half *__restrict__ S,
+                           const int32_t *__restrict__ A4, const int32_t *__restrict__ ASUM16,
+                           float da, float *__restrict__ out, int N, int K) {
+    extern __shared__ int32_t sh7[];
+    const int nw = K / 16;
+    int32_t *sA4 = sh7;
+    int32_t *sAS = sh7 + (size_t)nw * 4;
+    for (int i = threadIdx.x; i < nw * 4; i += blockDim.x) sA4[i] = A4[i];
+    for (int i = threadIdx.x; i < nw;     i += blockDim.x) sAS[i] = ASUM16[i];
+    __syncthreads();
+
+    const int warp = threadIdx.x / 32;
+    const int lane = threadIdx.x & 31;
+    const int row0 = (blockIdx.x * (blockDim.x / 32) + warp) * ROWS;
+    if (row0 >= N) return;
+
+    const int nblk = K / BONSAI_QK;
+    float acc[ROWS];
+#pragma unroll
+    for (int r = 0; r < ROWS; ++r) acc[r] = 0.f;
+
+    for (int widx = lane; widx < nw; widx += 32) {
+        // One activation fetch, reused ROWS times.
+        const int a0 = sA4[widx * 4 + 0], a1 = sA4[widx * 4 + 1];
+        const int a2 = sA4[widx * 4 + 2], a3 = sA4[widx * 4 + 3];
+        const int asum = sAS[widx];
+        const int sblk = widx / 8;
+
+#pragma unroll
+        for (int r = 0; r < ROWS; ++r) {
+            const uint32_t v = W[(size_t)(row0 + r) * nw + widx];
+            int dot = 0;
+            dot = __dp4a(unpack4_q2(v, 0), a0, dot);
+            dot = __dp4a(unpack4_q2(v, 2), a1, dot);
+            dot = __dp4a(unpack4_q2(v, 4), a2, dot);
+            dot = __dp4a(unpack4_q2(v, 6), a3, dot);
+            acc[r] += __half2float(S[(size_t)(row0 + r) * nblk + sblk]) * (float)(dot - asum);
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < ROWS; ++r) {
+        float a = acc[r];
+        for (int o = 16; o; o >>= 1) a += __shfl_down_sync(0xffffffff, a, o);
+        if (lane == 0 && row0 + r < N) out[row0 + r] = a * da;
+    }
+}
+
+// ---------------------------------------------------------------- v6
+// v5, but each lane loads 16 bytes of weights at a time instead of 4.
+//
+// Measured on this device: a pure streaming read reaches 240 GB/s with
+// 128-bit (uint4) loads and only 158 GB/s with 32-bit scalar loads. Since
+// v5 tops out at 177 GB/s and is issue-bound rather than latency-bound
+// (see v5's note), the remaining lever is to fetch the same bytes in
+// fewer, wider instructions -- one 16-byte load per lane covers 64
+// weights and replaces four 4-byte loads.
+//
+// Requires nw % 4 == 0, i.e. K % 64 == 0. Falls back to v5 otherwise.
+__global__ void gemv_q2_v6(const uint4 *__restrict__ W4, const half *__restrict__ S,
+                           const int32_t *__restrict__ A4, const int32_t *__restrict__ ASUM16,
+                           float da, float *__restrict__ out, int N, int K) {
+    extern __shared__ int32_t sh6[];
+    const int nw  = K / 16;        // 32-bit weight words per row
+    const int nw4 = nw / 4;        // uint4 loads per row
+    int32_t *sA4 = sh6;
+    int32_t *sAS = sh6 + (size_t)nw * 4;
+    for (int i = threadIdx.x; i < nw * 4; i += blockDim.x) sA4[i] = A4[i];
+    for (int i = threadIdx.x; i < nw;     i += blockDim.x) sAS[i] = ASUM16[i];
+    __syncthreads();
+
+    const int row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x / 32);
+    const int lane = threadIdx.x & 31;
+    if (row >= N) return;
+    const uint4 *w4 = W4 + (size_t)row * nw4;
+    const half *s = S + (size_t)row * (K / BONSAI_QK);
+    float acc = 0.f;
+
+    for (int i4 = lane; i4 < nw4; i4 += 32) {
+        const uint4 v = w4[i4];
+        const uint32_t vv[4] = {v.x, v.y, v.z, v.w};
+        const int w0 = i4 * 4;
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int widx = w0 + k;
+            int dot = 0;
+            dot = __dp4a(unpack4_q2(vv[k], 0), sA4[widx * 4 + 0], dot);
+            dot = __dp4a(unpack4_q2(vv[k], 2), sA4[widx * 4 + 1], dot);
+            dot = __dp4a(unpack4_q2(vv[k], 4), sA4[widx * 4 + 2], dot);
+            dot = __dp4a(unpack4_q2(vv[k], 6), sA4[widx * 4 + 3], dot);
+            acc += __half2float(s[widx / 8]) * (float)(dot - sAS[widx]);
+        }
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_down_sync(0xffffffff, acc, o);
+    if (lane == 0) out[row] = acc * da;
+}
+
 // ---------------------------------------------------------------- v3/v4
 // Bit-plane interleaved layout: `(v >> 2q) & 0x03030303` yields the codes
 // for logical base+4q+0..3 -- four CONSECUTIVE weights -- so the matching
@@ -408,6 +518,14 @@ int main(int argc, char **argv) {
       size_t sm = ((size_t)(K/16)*4 + (K/16)) * sizeof(int32_t);
       gemv_q2_v5<<<g, t, sm>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
       CHECK(cudaDeviceSynchronize()); ok &= check("v5 dp4a + smem acts", ref2, 2e-2); }
+    { int t = 256, w = t/32, g = (N + w - 1) / w;
+      size_t sm = ((size_t)(K/16)*4 + (K/16)) * sizeof(int32_t);
+      gemv_q2_v6<<<g, t, sm>>>((const uint4*)dq2r, ds, da4, das16, da, dout, N, K);
+      CHECK(cudaDeviceSynchronize()); ok &= check("v6 dp4a + uint4 loads", ref2, 2e-2); }
+    { int t = 256, w = t/32, g = (N + w*2 - 1) / (w*2);
+      size_t sm = ((size_t)(K/16)*4 + (K/16)) * sizeof(int32_t);
+      gemv_q2_v7<2><<<g, t, sm>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
+      CHECK(cudaDeviceSynchronize()); ok &= check("v7 smem acts + 2 rows", ref2, 2e-2); }
     { int t = 256, w = t/32, g = (N + w*8 - 1) / (w*8);
       gemv_q2_v4<8><<<g, t>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
       CHECK(cudaDeviceSynchronize()); ok &= check("v4 dp4a, 8 rows/warp", ref2, 2e-2); }
@@ -437,6 +555,20 @@ int main(int argc, char **argv) {
     add("v5 dp4a + smem acts", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
         size_t sm = ((size_t)(K/16)*4 + (K/16))*sizeof(int32_t);
         gemv_q2_v5<<<g,t,sm>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
+    add("v6 dp4a + uint4 loads", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
+        size_t sm = ((size_t)(K/16)*4 + (K/16))*sizeof(int32_t);
+        gemv_q2_v6<<<g,t,sm>>>((const uint4*)dq2r,ds,da4,das16,da,dout,N,K); });
+    // Note: names must be distinct storage, not a reused stack buffer --
+    // add() keeps the pointer.
+    {
+      size_t sm = ((size_t)(K/16)*4 + (K/16))*sizeof(int32_t);
+      add("v7 smem acts + 2 rows", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*2-1)/(w*2);
+          gemv_q2_v7<2><<<g,t,sm>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
+      add("v7 smem acts + 4 rows", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*4-1)/(w*4);
+          gemv_q2_v7<4><<<g,t,sm>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
+      add("v7 smem acts + 8 rows", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*8-1)/(w*8);
+          gemv_q2_v7<8><<<g,t,sm>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
+    }
     add("v4 q2 2 rows/warp", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*2-1)/(w*2);
         gemv_q2_v4<2><<<g,t>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
     add("v4 q2 4 rows/warp", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*4-1)/(w*4);
