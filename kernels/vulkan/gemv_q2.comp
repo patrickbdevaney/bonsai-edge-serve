@@ -62,6 +62,15 @@ int dot4(uint c, uint a, int acc) {
 #endif
 }
 
+// Build four consecutive 2-bit codes from byte p of a GGUF-order word.
+uint unpack_gguf(uint w, uint p) {
+    const uint c4 = (w >> (8u * p)) & 0xFFu;
+    return  (c4        & 3u)
+         | (((c4 >> 2) & 3u) <<  8)
+         | (((c4 >> 4) & 3u) << 16)
+         | (((c4 >> 6) & 3u) << 24);
+}
+
 #define LANES 32
 #define TEAMS 8
 #define ROWS  4
@@ -112,10 +121,23 @@ void main() {
                 // Shift 2q selects logical base+4q+0..3 -- four
                 // CONSECUTIVE weights, matching one aligned activation
                 // word. That is what the bit-plane repack buys.
+#ifdef GGUF_ORDER
+                // GGUF order: byte p of the word holds logical weights
+                // 4p..4p+3 at shifts 0,2,4,6. The Q2_K-style
+                // `(w >> s) & 0x03030303` trick does NOT apply here -- it
+                // would select the same field from each byte, i.e. weights
+                // strided by 4, and pair them with the wrong activations.
+                // Extract per byte into consecutive lanes instead.
+                d = dot4(unpack_gguf(v[r], 0), a0, d);
+                d = dot4(unpack_gguf(v[r], 1), a1, d);
+                d = dot4(unpack_gguf(v[r], 2), a2, d);
+                d = dot4(unpack_gguf(v[r], 3), a3, d);
+#else
                 d = dot4( v[r]        & 0x03030303u, a0, d);
                 d = dot4((v[r] >>  2) & 0x03030303u, a1, d);
                 d = dot4((v[r] >>  4) & 0x03030303u, a2, d);
                 d = dot4((v[r] >>  6) & 0x03030303u, a3, d);
+#endif
                 accf[r] += s[(row0 + r) * nblk + (widx >> 3)] * float(d - cs);
             }
         }

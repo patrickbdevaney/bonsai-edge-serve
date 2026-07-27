@@ -168,11 +168,16 @@ int main(int argc, char **argv) {
 
     // ---------------- buffers ----------------
     Buf bW2 = make_buf(c, q2_bytes), bW1 = make_buf(c, q1_bytes);
+    // GGUF-order (unrepacked) weights, for the extraction path that
+    // ggml-vulkan would have to use -- it receives weights in GGUF order
+    // and has no opportunity to repack them.
+    Buf bW2g = make_buf(c, q2_bytes);
     Buf bS  = make_buf(c, hs.size()*4);
     Buf bA  = make_buf(c, ha4.size()*4);
     Buf bS16= make_buf(c, asum16.size()*4), bS32 = make_buf(c, asum32.size()*4);
     Buf bO  = make_buf(c, (size_t)N*4);
     memcpy(bW2.p, hq2r.data(), q2_bytes);
+    memcpy(bW2g.p, hq2.data(), q2_bytes);
     memcpy(bW1.p, hq1r.data(), q1_bytes);
     memcpy(bS.p,  hs.data(),   hs.size()*4);
     memcpy(bA.p,  ha4.data(),  ha4.size()*4);
@@ -190,9 +195,9 @@ int main(int argc, char **argv) {
     dl.bindingCount = 5; dl.pBindings = lb;
     VkDescriptorSetLayout dsl; VK(vkCreateDescriptorSetLayout(c.dev, &dl, nullptr, &dsl));
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5*4};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5*8};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dpi.maxSets = 4; dpi.poolSizeCount = 1; dpi.pPoolSizes = &ps;
+    dpi.maxSets = 8; dpi.poolSizeCount = 1; dpi.pPoolSizes = &ps;
     VkDescriptorPool dpool; VK(vkCreateDescriptorPool(c.dev, &dpi, nullptr, &dpool));
 
     VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12};
@@ -277,16 +282,20 @@ int main(int argc, char **argv) {
         return ok;
     };
 
-    struct Case { const char *name; const char *spv; bool q2; };
+    // which weight buffer each case binds: 0 = repacked, 1 = GGUF order, 2 = q1
+    struct Case { const char *name; const char *spv; int buf; bool q2; };
     std::vector<Case> cases = {
-        {"q2 portable",     "gemv_q2.spv",     true},
-        {"q2 int-dot",      "gemv_q2_dot.spv", true},
-        {"q1 portable",     "gemv_q1.spv",     false},
-        {"q1 int-dot",      "gemv_q1_dot.spv", false},
+        {"q2 portable",        "gemv_q2.spv",      0, true},
+        {"q2 int-dot",         "gemv_q2_dot.spv",  0, true},
+        {"q2 int-dot GGUF-ord","gemv_q2_gguf.spv", 1, true},
+        {"q1 portable",        "gemv_q1.spv",      2, false},
+        {"q1 int-dot",         "gemv_q1_dot.spv",  2, false},
     };
 
-    VkDescriptorSet set2 = make_set(bW2, bS16);
-    VkDescriptorSet set1 = make_set(bW1, bS32);
+    VkDescriptorSet set2  = make_set(bW2,  bS16);
+    VkDescriptorSet set2g = make_set(bW2g, bS16);
+    VkDescriptorSet set1  = make_set(bW1,  bS32);
+    auto setfor = [&](int b) { return b == 0 ? set2 : (b == 1 ? set2g : set1); };
 
     printf("=== validation (first %d rows vs CPU reference) ===\n", NREF);
     std::vector<Case> live;
@@ -297,16 +306,16 @@ int main(int argc, char **argv) {
         fclose(f);
         VkPipeline p = make_pipe(cs.spv);
         memset(bO.p, 0, (size_t)N*4);
-        run(p, cs.q2 ? set2 : set1, 1);
+        run(p, setfor(cs.buf), 1);
         if (check(cs.name, cs.q2 ? ref2 : ref1)) { live.push_back(cs); pipes.push_back(p); }
     }
     if (live.empty()) { printf("\nnothing validated -- no timings\n"); return 1; }
 
     printf("\n=== throughput (%d iters) ===\n", iters);
     for (size_t i = 0; i < live.size(); ++i) {
-        run(pipes[i], live[i].q2 ? set2 : set1, 2);        // warm
+        run(pipes[i], setfor(live[i].buf), 2);              // warm
         auto t0 = std::chrono::high_resolution_clock::now();
-        run(pipes[i], live[i].q2 ? set2 : set1, iters);
+        run(pipes[i], setfor(live[i].buf), iters);
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1-t0).count() / iters;
         double bytes = live[i].q2 ? (double)q2_bytes : (double)q1_bytes;
