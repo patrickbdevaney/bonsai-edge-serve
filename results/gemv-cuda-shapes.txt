@@ -72,3 +72,43 @@ attributed to a 256 MiB shape, where we measure 177.6. But it is the
 first explanation that fits the numbers, and it predicts something
 checkable: any re-measurement must state the weight footprint relative
 to L2, or the number is not interpretable.
+
+HOW CLOSE IS v5 TO THE MACHINE? 90%.
+------------------------------------
+Measured achievable streaming read on this device (bench/bandwidth):
+
+  128-bit (float4) loads : 244.7 GB/s
+  32-bit  (uint32) loads : 161.4 GB/s
+
+v5 in the streaming regime reaches 212-220 GB/s (40-160 MiB shapes), so
+it is at ~90% of achievable read bandwidth. There is very little headroom
+left in this kernel.
+
+Two things worth noting:
+
+1. v5 uses 32-bit weight loads yet beats the 161.4 GB/s scalar-read
+   figure, reaching 220. That is not a contradiction -- v5's loads are
+   coalesced across the warp (lane i reads word i, so a warp covers 128
+   contiguous bytes), which the memory system merges into wide
+   transactions. The 161.4 number characterizes a non-coalescing scalar
+   pattern and is not a ceiling for well-formed 32-bit access. It also
+   explains why v6's explicit uint4 loads bought nothing: the hardware
+   was already coalescing.
+
+2. Throughput falls to 177.6 GB/s at 320 MiB, below the 212-220 seen at
+   40-160 MiB. Unexplained; TLB or page-level effects are the obvious
+   suspects. Real Bonsai matrices are 6-21 MiB so this regime is not on
+   the critical path, but it is why the single-shape 256 MiB benchmark
+   understated the kernel.
+
+CORRECTED ROOFLINE
+------------------
+Using ~215 GB/s as the fair streaming rate for this kernel rather than
+the 177.6 measured at one oversized shape:
+
+  ternary Q2_0 : 7.165 GB/token -> ~30 tok/s ceiling
+  reference fork measures 16.77 -> we are at ~56% of it
+
+So the honest headroom from kernel work is about 1.8x, up from the 1.55x
+implied by the 256 MiB figure, and against the 244.7 GB/s machine limit
+the absolute ceiling is ~34 tok/s.

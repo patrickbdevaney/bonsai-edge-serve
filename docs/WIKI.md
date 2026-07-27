@@ -270,6 +270,15 @@ conclusion about that size. Sweep the size until you cross a cache
 boundary, or you are characterizing your benchmark rather than your
 kernel.
 
+**And the kernel is nearly done.** Measured achievable streaming read is
+**244.7 GB/s** (float4) / 161.4 (scalar uint32). v5 reaches 212-220 GB/s
+in the streaming regime, i.e. **~90% of achievable bandwidth**. Two
+consequences: there is very little left to win here, and v6's failure is
+explained -- v5's 32-bit loads are already coalesced across the warp into
+wide transactions, so explicit `uint4` loads had nothing to add. The
+161.4 figure characterizes a non-coalescing pattern, not a ceiling for
+well-formed 32-bit access.
+
 This also gives the first plausible answer to Q2: v5 alone hits 237.9
 GB/s at 20 MiB and v7 hits 308.6, so a reported 229 GB/s is entirely
 consistent with a measurement that had L2 reuse. Hypothesis, not
