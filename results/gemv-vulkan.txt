@@ -2,18 +2,54 @@ device NVIDIA Tegra NVIDIA Thor  Vulkan 1.4.315
 shape  N=131072 K=8192   Q2_0 weights 256.0 MiB   Q1_0 128.0 MiB
 
 === validation (first 64 rows vs CPU reference) ===
-  q2 portable                (not built, skipped)
-  q2 int-dot                 (not built, skipped)
-  q1 portable                (not built, skipped)
-  q1 int-dot                 (not built, skipped)
+  q2 portable                max rel err 4.783e-06  OK
+  q2 int-dot                 max rel err 4.783e-06  OK
+  q1 portable                max rel err 9.636e-07  OK
+  q1 int-dot                 max rel err 9.636e-07  OK
 
-nothing validated -- no timings
+=== throughput (30 iters) ===
+  q2 portable                  2.654 ms     101.1 GB/s
+  q2 int-dot                   2.593 ms     103.5 GB/s
+  q1 portable                  1.885 ms      71.2 GB/s
+  q1 int-dot                   1.350 ms      99.4 GB/s
 
-NOTE: the int-dot variants could not be built. glslc 2023.8 (shaderc,
-Ubuntu 24.04) rejects GL_EXT_integer_dot_product:
-  error: '#extension' : extension not supported: GL_EXT_integer_dot_product
-Thor's driver reports integerDotProduct4x8BitPackedSignedAccelerated =
-true, so the fast path is available on the DEVICE but not in this
-TOOLCHAIN. Building it needs a newer glslc or a Vulkan SDK install.
-The numbers above are therefore the portable Tier-1 path only, and are a
-floor rather than what this backend can do.
+GB/s counts weight bytes only, matching the CUDA ladder.
+
+TOOLCHAIN
+---------
+The int-dot variants need GL_EXT_integer_dot_product in the GLSL
+frontend. Neither system compiler on this box has it:
+
+  glslc     2023.8  (bundles glslang 14.0.0)  -- extension not supported
+  glslang   15.1.0  (apt glslang-tools)       -- extension not supported
+
+It is NOT a --target-env problem; vulkan1.1/1.2/1.3 fail identically.
+Upstream glslang added it later, so it was built from source:
+
+  git clone --depth 1 https://github.com/KhronosGroup/glslang.git
+  cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=0 \
+        -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=ON
+  cmake --build build -j 12
+  # -> build/StandAlone/glslang, version 16.4.0
+  # ENABLE_OPT=0 drops the SPIR-V optimizer and its SPIRV-Tools
+  # dependency; the GLSL front end is all that is needed here.
+
+One shader change was also required. The overload set is:
+  uint dotPacked4x8AccSatEXT(uint, uint, uint)
+  int  dotPacked4x8AccSatEXT(uint, int,  int)   <-- the one we want
+Activations are packed SIGNED int8 while codes are unsigned, so the
+activation word must be cast: dotPacked4x8AccSatEXT(c, int(a), acc).
+Passing both as uint selects the all-unsigned overload, which would
+treat activations as 0..255. Here it fails to compile against an int
+accumulator, so it surfaces loudly -- but with a uint accumulator it
+would have been a silent wrong-answer bug.
+
+CONSEQUENCE BEYOND THESE KERNELS
+--------------------------------
+ggml-vulkan runs the same feature test
+(ggml/src/ggml-vulkan/CMakeLists.txt, test_shader_extension_support).
+With the system glslc it resolves to "GL_EXT_integer_dot_product not
+supported by glslc" and builds the ENTIRE Vulkan backend with no
+integer-dot path at all. The llama.cpp Vulkan numbers in this repo were
+therefore measured with that path disabled, and rebuilding the fork with
+a newer glslc should lift them too.

@@ -46,7 +46,13 @@ int sb(uint p, int k) { return (int(p << (24 - 8 * k))) >> 24; }
 // acts is 4 packed int8. Identical semantics to __dp4a / dotPacked4x8.
 int dot4(uint c, uint a, int acc) {
 #ifdef USE_INT_DOT
-    return dotPacked4x8AccSatEXT(c, a, acc);
+    // Overload selection matters: the activations are packed SIGNED int8
+    // and the codes are unsigned, so cast to reach
+    //   int dotPacked4x8AccSatEXT(uint a, int b, int c)
+    // Passing both as uint silently picks the all-unsigned overload, which
+    // returns uint and treats activations as 0..255 -- wrong answers, and
+    // it will not even compile against an int accumulator.
+    return dotPacked4x8AccSatEXT(c, int(a), acc);
 #else
     acc += int((c      ) & 0xFFu) * sb(a, 0);
     acc += int((c >>  8) & 0xFFu) * sb(a, 1);

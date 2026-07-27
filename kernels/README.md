@@ -61,16 +61,16 @@ Best kernel per backend, Q2_0, N=131072 K=8192, GB/s of weight bytes:
 | Backend | GB/s | % of the 273 GB/s SoC spec | note |
 | :-- | --: | --: | :-- |
 | CUDA (v5, dp4a + smem acts) | **177.2** | 65% | best overall |
-| Vulkan (portable Tier 1) | 93.3 | 34% | int-dot path unbuildable here |
+| Vulkan (int-dot Tier 3) | 103.5 | 38% | needs glslang >= 16 |
 | CPU (whole-vector + SDOT, 1T) | 5.8 | 2% | single thread |
 
 Correctness: every backend matches the same CPU reference -- CUDA
 1.2e-07, Vulkan 4.8e-06, NEON bit-exact.
 
-Read the Vulkan number as a floor, not a ceiling: its accelerated
-integer-dot path exists on this device but cannot be compiled by the
-toolchain installed here (see below). The CPU column is single-threaded
-and is included for shape, not as a backend comparison.
+The Vulkan row needed a glslang built from source to reach it; both
+system compilers lack the GLSL front end for the hardware dot-product
+instruction (see below). The CPU column is single-threaded and is
+included for shape, not as a backend comparison.
 
 ## Measured: CUDA, Jetson Thor (sm_110a)
 
@@ -132,22 +132,65 @@ the research pass suggested. The honest version of the Phase 2 claim is
 
 Same shape, same shared format. Full log in `../results/gemv-vulkan.txt`.
 
-| Shader | GB/s | vs CUDA best |
-| :-- | --: | --: |
-| Q2_0 portable (Tier 1) | 93.3 | 53% |
-| Q1_0 portable (Tier 1) | 71.4 | 40% |
-| Q2_0 / Q1_0 int-dot (Tier 3) | **not built** | -- |
+| Shader | GB/s | vs portable | vs CUDA best |
+| :-- | --: | --: | --: |
+| Q2_0 portable (Tier 1) | 101.1 | -- | 57% |
+| **Q2_0 int-dot (Tier 3)** | **103.5** | **+2%** | 58% |
+| Q1_0 portable (Tier 1) | 71.2 | -- | 40% |
+| **Q1_0 int-dot (Tier 3)** | **99.4** | **+40%** | 56% |
 
-Both validate against the same CPU reference (4.8e-06 and 9.6e-07).
+All four validate against the same CPU reference, and the int-dot
+variants return *identical* error figures to the portable ones (4.8e-06
+Q2_0, 9.6e-07 Q1_0), which is the check that the accelerated path is
+computing the same thing rather than merely computing something faster.
 
-**The int-dot fast path could not be built here.** `glslc` 2023.8
-(shaderc, Ubuntu 24.04) rejects `GL_EXT_integer_dot_product`, while
-Thor's *driver* reports
-`integerDotProduct4x8BitPackedSignedAccelerated = true`. So the
-accelerated path exists on the device but not in this toolchain, and
-93.3 GB/s is a **floor** for this backend rather than its ceiling.
-Building it needs a newer glslc or a Vulkan SDK install. This is exactly
-the toolchain-vs-device split the shader's own header warned about.
+**Q1_0 gains 40%, Q2_0 only 2%**, and the asymmetry is structural rather
+than surprising: a Q1_0 word packs 32 weights and needs eight `dot4`
+calls, against four for Q2_0's 16 weights, so the scalar fallback's
+per-call cost weighs twice as heavily. The lower the bit width, the more
+the hardware dot instruction is worth.
+
+### Getting the int-dot path to build at all
+
+This was the blocker, and it was a toolchain problem, not a device one.
+Thor's driver reports `integerDotProduct4x8BitPackedSignedAccelerated =
+true`, but neither system compiler has the GLSL front end:
+
+| Compiler | glslang | `GL_EXT_integer_dot_product` |
+| :-- | :-- | :-- |
+| `glslc` 2023.8 (Ubuntu 24.04) | 14.0.0 | not supported |
+| `glslang-tools` 15.1.0 (apt) | 15.1.0 | not supported |
+| **built from source** | **16.4.0** | **supported** |
+
+It is not a `--target-env` issue -- `vulkan1.1/1.2/1.3` all fail
+identically. Build recipe and the exact failure text are in
+`../results/gemv-vulkan.txt`.
+
+One shader fix was needed too, and it is a trap worth naming. The
+overloads are:
+
+```glsl
+uint dotPacked4x8AccSatEXT(uint, uint, uint)
+int  dotPacked4x8AccSatEXT(uint, int,  int)   // the one we want
+```
+
+Activations are packed **signed** int8 while codes are unsigned, so the
+activation word must be cast: `dotPacked4x8AccSatEXT(c, int(a), acc)`.
+Passing both as `uint` selects the all-unsigned overload, which treats
+activations as 0..255. Here that fails to compile against an `int`
+accumulator, so it surfaces loudly -- but with a `uint` accumulator it
+would have been a silent wrong-answer bug.
+
+### This affects the whole Vulkan backend, not just these kernels
+
+`ggml-vulkan` runs the same feature test
+(`ggml/src/ggml-vulkan/CMakeLists.txt`, `test_shader_extension_support`).
+With the system `glslc` it resolves to *"GL_EXT_integer_dot_product not
+supported by glslc"* and compiles the **entire Vulkan backend with no
+integer-dot path**. So the llama.cpp Vulkan numbers elsewhere in this
+repo (11.79 / 15.98 tok/s) were measured with that path disabled, and
+rebuilding the fork with a newer glslc should lift them independently of
+anything we write.
 
 ## Measured: CPU (ARM NEON), Jetson Thor, 14x Neoverse V3AE
 
@@ -246,18 +289,29 @@ cc -O3 -march=armv8.2-a+dotprod -fopenmp \
 nvcc -O3 -arch=sm_110a --extended-lambda -o cuda/gemv_bench cuda/gemv_bench.cu
 ./cuda/gemv_bench 4096 65536 20
 
-# Vulkan shaders
-glslc --target-env=vulkan1.3 -O -o vulkan/gemv_q2.spv vulkan/gemv_q2.comp
-glslc --target-env=vulkan1.3 -O -o vulkan/gemv_q1.spv vulkan/gemv_q1.comp
-# add -DUSE_INT_DOT once the toolchain supports GL_EXT_integer_dot_product
+# Vulkan. GLSLANG must be >= 16; the system glslc (2023.8 / glslang 14)
+# and apt glslang-tools 15.1 both lack GL_EXT_integer_dot_product.
+#   git clone --depth 1 https://github.com/KhronosGroup/glslang.git
+#   cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=0 \
+#         -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=ON
+#   cmake --build build -j 12      # -> build/StandAlone/glslang
+GLSLANG=/path/to/glslang-src/build/StandAlone/glslang
+cd vulkan
+for q in q2 q1; do
+  $GLSLANG -V --target-env vulkan1.3            gemv_$q.comp -o gemv_$q.spv
+  $GLSLANG -V --target-env vulkan1.3 -DUSE_INT_DOT gemv_$q.comp -o gemv_${q}_dot.spv
+done
+g++ -O2 -o gemv_vk_bench gemv_vk_bench.cpp -lvulkan
+./gemv_vk_bench 8192 131072 30      # run from this directory: it loads *.spv by relative path
 ```
 
 The Vulkan shaders compile two ways. The default is the **portable**
-path: plain integer arithmetic, any Vulkan 1.1 device. `-DUSE_INT_DOT`
+path: plain integer arithmetic, any Vulkan 1.1 device, and it is what
+runs on the ~30% of devices without the extension. `-DUSE_INT_DOT`
 selects `dotPacked4x8AccSatEXT`, which needs
-`VK_KHR_shader_integer_dot_product` (~70% of devices) and a newer
-shaderc than the 2023.8 installed here. Note the *packed* form is the
-accelerated one: Thor reports
+`VK_KHR_shader_integer_dot_product` (~70% of devices). Measured here:
++40% on Q1_0, +2% on Q2_0. Note the *packed* form is the accelerated
+one -- Thor reports
 `integerDotProduct4x8BitPackedSignedAccelerated = true` but
 `integerDotProduct8BitSignedAccelerated = false`, so the `i8vec4` form is
 not the fast path anywhere it matters.
@@ -272,10 +326,10 @@ not the fast path anywhere it matters.
    per lane, `cp.async` staging of activations, an L2 persisting window
    for the activation block, and splitting K across CTAs so the 20 SMs
    are not wave-quantized at this shape.
-3. **Get a toolchain that can build the Vulkan int-dot path.** The device
-   advertises `integerDotProduct4x8BitPackedSignedAccelerated`; only
-   `glslc` 2023.8 is in the way. This is the single cheapest Vulkan win
-   available and it is currently blocked on a package, not on design.
+3. **Rebuild the llama.cpp fork with glslang >= 16** so ggml-vulkan's own
+   integer-dot path is enabled. Our kernels gained 40% on Q1_0 from it;
+   the backend's shaders should gain independently, and the current
+   Vulkan tok/s figures were all measured with it compiled out.
 4. **Then attack Vulkan barrier scoping** -- ~1.4us narrow vs ~3.9us wide
    per dispatch, ~2293 dispatches per token, a ~3.9 ms/token floor and
    the reason speculation loses on that backend.
