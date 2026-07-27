@@ -26,3 +26,5 @@ venv/
 .DS_Store
 bench/gpu_mem
 bench/bandwidth
+kernels/cuda/gemv_bench
+kernels/cpu/gemv_neon_bench
