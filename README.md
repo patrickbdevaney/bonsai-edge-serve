@@ -303,15 +303,21 @@ Detail in `docs/METHODOLOGY.md`.
 pass plus new measurements on this box. The five results that changed the
 plan:
 
-**1. We are at ~64% of an achievable roofline, and the gap is kernel
-quality.** *Since superseded by our own measurements -- see below.* The
-research pass reported a 2-bit ternary GEMV reaching 229 GB/s (84% of
-spec). **We built the ladder and could not reproduce that: our best is
-177 GB/s (65%)**, an 11x span from naive rather than 33x. That implies
-~26 tok/s ternary against the reference fork's 16.77, so the headroom is
-about **1.55x, not ~2x**. Real, but smaller than the brief suggested.
-**The engine is still the ceiling, just a lower one.** Details and the
-full ladder in `kernels/README.md`.
+**1. We are at ~56% of an achievable roofline, and our kernel is already
+at 90% of the machine.** We built the GEMV ladder and measured it across
+shapes. Best streaming rate is **212-220 GB/s**, against a measured
+achievable read bandwidth of **244.7 GB/s** -- so the kernel itself has
+little left to give. That puts ternary decode near **30 tok/s** against
+the reference fork's 16.77, i.e. **~1.8x of headroom** from kernel work,
+with an absolute machine ceiling around 34 tok/s.
+
+The research pass reported 229 GB/s (84% of spec) and we could not
+reproduce it at the shape claimed. The likely explanation is now
+measured: the winner and the rate both depend on whether the weights fit
+Thor's 32 MB L2, and L2-resident shapes reach 238-388 GB/s. A decode step
+touches each matrix once across ~3.8 GB, so the streaming regime is the
+real one. Full ladder and shape sweep in `kernels/README.md` and
+`results/gemv-cuda-shapes.txt`.
 
 **2. The DSpark memory blowup is fixable, measured.** Capping the
 drafter's staging batch saves ~1 GB at ctx 4096 with **zero throughput
