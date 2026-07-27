@@ -506,6 +506,33 @@ usable.**
 
 ---
 
+### T2b. "The framework only handles 32-quant blocks" was wrong
+
+We recorded `QUANT_K = 128` as the blocker for putting `q1_0`/`q2_0` on
+ggml-vulkan's integer-dot path. It is not: IQ1_S and Q2_K are both 256
+quants and both supported, via a `DATA_A_QUANT_K` path that takes `ib` as
+a **virtual block index in units of 32 quants**. Block size is a division,
+not an obstacle.
+
+The real trap is subtler and would have shipped silently wrong numbers.
+Q2_K extracts codes with `(word >> shift) & 0x03030303`. On a Q2_0 word
+that selects the same bit-field from each of four bytes, which is weights
+strided by 4 -- *not* four consecutive weights -- so every
+`dotPacked4x8EXT` would pair codes with the wrong activations. It
+compiles, runs, and produces plausible output. Only a numerical gate
+catches it.
+
+This is the same distinction our own CUDA ladder drew between v2 (GGUF
+order, gather activations) and v3 (repacked, one aligned load). Vulkan
+gets the weights in GGUF order and cannot repack, so it must use the v2
+shape.
+
+**Generalizable:** when reusing a sibling type's extraction code, check
+what its bit layout means, not just that the types match. Two 2-bit
+formats can need opposite extraction.
+
+Full contract in `docs/INTEGRATION_NOTES.md`.
+
 ## Scope corrections
 
 ### C1. The smaller Bonsai models are a different architecture
