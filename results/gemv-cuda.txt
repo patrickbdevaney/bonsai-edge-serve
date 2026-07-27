@@ -1,0 +1,25 @@
+device NVIDIA Thor  CC 11.0  20 SMs
+shape  N=131072 K=8192   Q2_0 weights 256.0 MiB   Q1_0 128.0 MiB
+
+=== validation (first 64 rows vs CPU reference) ===
+  v0 naive                   max rel err 4.898e-04  OK
+  v1 smem activations        max rel err 4.898e-04  OK
+  v2 dp4a, GGUF layout       max rel err 1.249e-07  OK
+  v3 dp4a, interleaved       max rel err 1.249e-07  OK
+  v5 dp4a + smem acts        max rel err 1.249e-07  OK
+  v4 dp4a, 8 rows/warp       max rel err 1.249e-07  OK
+  q1 v4, 8 rows/warp         max rel err 7.431e-08  OK
+
+=== throughput (30 iters) ===
+  v0 naive                 16.744 ms      16.0 GB/s
+  v1 smem activations      21.493 ms      12.5 GB/s
+  v2 dp4a GGUF              1.599 ms     167.9 GB/s
+  v3 dp4a interleaved       1.568 ms     171.2 GB/s
+  v5 dp4a + smem acts       1.515 ms     177.2 GB/s
+  v4 q2 2 rows/warp         1.995 ms     134.5 GB/s
+  v4 q2 4 rows/warp         2.295 ms     117.0 GB/s
+  v4 q2 8 rows/warp         2.191 ms     122.5 GB/s
+  v4 q1 8 rows/warp         1.341 ms     100.1 GB/s
+
+GB/s counts weight bytes only -- that is the term that scales
+with model size and dominates batch-1 decode.

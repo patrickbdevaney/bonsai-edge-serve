@@ -1,0 +1,19 @@
+device NVIDIA Tegra NVIDIA Thor  Vulkan 1.4.315
+shape  N=131072 K=8192   Q2_0 weights 256.0 MiB   Q1_0 128.0 MiB
+
+=== validation (first 64 rows vs CPU reference) ===
+  q2 portable                (not built, skipped)
+  q2 int-dot                 (not built, skipped)
+  q1 portable                (not built, skipped)
+  q1 int-dot                 (not built, skipped)
+
+nothing validated -- no timings
+
+NOTE: the int-dot variants could not be built. glslc 2023.8 (shaderc,
+Ubuntu 24.04) rejects GL_EXT_integer_dot_product:
+  error: '#extension' : extension not supported: GL_EXT_integer_dot_product
+Thor's driver reports integerDotProduct4x8BitPackedSignedAccelerated =
+true, so the fast path is available on the DEVICE but not in this
+TOOLCHAIN. Building it needs a newer glslc or a Vulkan SDK install.
+The numbers above are therefore the portable Tier-1 path only, and are a
+floor rather than what this backend can do.

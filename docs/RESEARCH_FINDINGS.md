@@ -11,12 +11,16 @@ otherwise cited literature. Uncertain claims are flagged.
 
 ## 0. The five findings that change the plan
 
-1. **We are at ~52% of an achievable roofline, and the gap is kernel
-   quality, not hardware.** [M] A correctly written 2-bit ternary GEMV on
-   Thor reaches **229 GB/s = 84% of the 273 GB/s spec**, verified
-   bit-exact. The naive version of the same kernel runs at 6.9 GB/s -- a
-   **33x span**. That implies ~32 tok/s for ternary and ~49 tok/s for
-   1-bit; the reference fork delivers 16.77 and 19.03.
+1. **We are at ~64% of an achievable roofline, and the gap is kernel
+   quality, not hardware.** The research pass reported a 2-bit ternary
+   GEMV reaching **229 GB/s = 84% of the 273 GB/s spec**. **We
+   subsequently built that ladder ourselves and could not reproduce it:
+   our best is 177 GB/s (65%)**, an 11x span from naive rather than 33x,
+   and row-blocking -- the change credited with closing the last 25% --
+   made it *slower*. See `kernels/README.md` for the measured ladder.
+   Corrected implication: ~26 tok/s ternary against the fork's 16.77, so
+   roughly **1.55x of headroom, not ~2x**. The rest of this section is
+   left as the research pass reported it, with our corrections marked.
 2. **The 8.5 GB DSpark overhead is three lines of worst-case sizing, and
    capping one of them is free.** [M, ours] Capping the drafter staging
    batch saves ~1 GB at ctx 4096 with **zero throughput loss, zero
@@ -215,6 +219,7 @@ problem; the drafter's buffers were.**
 | Grid-wide `cg::sync()` | 1.24-1.49 us |
 
 **Roofline at 229 GB/s achieved: ternary ~32 tok/s, 1-bit ~49 tok/s.**
+*(Superseded: at our reproduced 177 GB/s this is ~26 tok/s ternary.)*
 Against our measured 16.77 / 19.03 the reference fork is at **~52% / ~39%
 of achievable**. Published Thor llama.cpp numbers for a dense Q8_0 7B sit
 at ~70% of spec, so ~52% for the low-bit path is specifically a low-bit

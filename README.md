@@ -303,12 +303,15 @@ Detail in `docs/METHODOLOGY.md`.
 pass plus new measurements on this box. The five results that changed the
 plan:
 
-**1. We are at ~52% of an achievable roofline, and the gap is kernel
-quality.** A correctly written 2-bit ternary GEMV on Thor reaches
-**229 GB/s = 84% of spec** (verified bit-exact); the naive version of the
-same kernel gets 6.9 GB/s -- a **33x span**. That implies ~32 tok/s
-ternary and ~49 tok/s 1-bit, against the reference fork's 16.77 / 19.03.
-**The engine, not the hardware, is the ceiling.**
+**1. We are at ~64% of an achievable roofline, and the gap is kernel
+quality.** *Since superseded by our own measurements -- see below.* The
+research pass reported a 2-bit ternary GEMV reaching 229 GB/s (84% of
+spec). **We built the ladder and could not reproduce that: our best is
+177 GB/s (65%)**, an 11x span from naive rather than 33x. That implies
+~26 tok/s ternary against the reference fork's 16.77, so the headroom is
+about **1.55x, not ~2x**. Real, but smaller than the brief suggested.
+**The engine is still the ceiling, just a lower one.** Details and the
+full ladder in `kernels/README.md`.
 
 **2. The DSpark memory blowup is fixable, measured.** Capping the
 drafter's staging batch saves ~1 GB at ctx 4096 with **zero throughput

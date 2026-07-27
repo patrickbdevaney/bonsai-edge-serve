@@ -117,6 +117,50 @@ __global__ void gemv_q2_v2(const uint32_t *__restrict__ W, const half *__restric
     if (lane == 0) out[row] = acc * da;
 }
 
+// ---------------------------------------------------------------- v5
+// v3's structure, but with the quantized activations staged in shared
+// memory once per block.
+//
+// Motivation, from measuring v2/v3/v4: every 4-byte weight word needs
+// four A4[] words plus one ASUM16[] word -- 20 bytes of activation reads
+// per 4 bytes of weights. Those reads are not DRAM traffic (activations
+// are only K bytes and stay resident), but they are load-ISSUE traffic,
+// and issue slots are exactly what a batch-1 GEMV is short of. That also
+// explains why ROWS>1 did not help: the loop is issue-bound, not
+// latency-bound, so adding independent loads cannot hide anything.
+//
+// Staging A4/ASUM16 in smem turns 5 global loads per word into 5 shared
+// loads plus one global weight load.
+__global__ void gemv_q2_v5(const uint32_t *__restrict__ W, const half *__restrict__ S,
+                           const int32_t *__restrict__ A4, const int32_t *__restrict__ ASUM16,
+                           float da, float *__restrict__ out, int N, int K) {
+    extern __shared__ int32_t sh[];
+    const int nw = K / 16;                 // weight words per row
+    int32_t *sA4 = sh;                     // nw*4 entries
+    int32_t *sAS = sh + (size_t)nw * 4;    // nw entries
+    for (int i = threadIdx.x; i < nw * 4; i += blockDim.x) sA4[i] = A4[i];
+    for (int i = threadIdx.x; i < nw;     i += blockDim.x) sAS[i] = ASUM16[i];
+    __syncthreads();
+
+    const int row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x / 32);
+    const int lane = threadIdx.x & 31;
+    if (row >= N) return;
+    const uint32_t *w = W + (size_t)row * nw;
+    const half *s = S + (size_t)row * (K / BONSAI_QK);
+    float acc = 0.f;
+    for (int widx = lane; widx < nw; widx += 32) {
+        const uint32_t v = w[widx];
+        int dot = 0;
+        dot = __dp4a(unpack4_q2(v, 0), sA4[widx * 4 + 0], dot);
+        dot = __dp4a(unpack4_q2(v, 2), sA4[widx * 4 + 1], dot);
+        dot = __dp4a(unpack4_q2(v, 4), sA4[widx * 4 + 2], dot);
+        dot = __dp4a(unpack4_q2(v, 6), sA4[widx * 4 + 3], dot);
+        acc += __half2float(s[widx / 8]) * (float)(dot - sAS[widx]);
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_down_sync(0xffffffff, acc, o);
+    if (lane == 0) out[row] = acc * da;
+}
+
 // ---------------------------------------------------------------- v3/v4
 // Bit-plane interleaved layout: `(v >> 2q) & 0x03030303` yields the codes
 // for logical base+4q+0..3 -- four CONSECUTIVE weights -- so the matching
@@ -284,6 +328,18 @@ int main(int argc, char **argv) {
     for (int i = 0; i < K / 16; ++i) { int s = 0; for (int k = 0; k < 16; ++k) s += ha[i*16+k]; asum16[i] = s; }
     for (int i = 0; i < K / 32; ++i) { int s = 0; for (int k = 0; k < 32; ++k) s += ha[i*32+k]; asum32[i] = s; }
 
+    // Dequantized activations, for the float rungs (v0/v1).
+    // The dp4a rungs consume int8 activations, so the CPU reference below
+    // is built from `ha * da` -- the quantized values. Handing v0/v1 the
+    // ORIGINAL floats would make them compute a different (in fact more
+    // accurate) dot product, and they would fail validation against that
+    // reference for a reason that has nothing to do with the kernel.
+    // Feeding them the round-tripped activations keeps every rung on
+    // identical math, which is also what makes the GB/s ladder a fair
+    // comparison.
+    std::vector<float> hxq(K);
+    for (int i = 0; i < K; ++i) hxq[i] = (float)ha[i] * da;
+
     // CPU reference on the FIRST 64 rows only (it is slow)
     const int NREF = 64;
     std::vector<float> ref2(NREF), ref1(NREF);
@@ -308,6 +364,7 @@ int main(int argc, char **argv) {
     CHECK(cudaMalloc(&dq2, q2_bytes));  CHECK(cudaMalloc(&dq2r, q2_bytes));
     CHECK(cudaMalloc(&dq1r, q1_bytes)); CHECK(cudaMalloc(&ds, hs.size()*sizeof(half)));
     CHECK(cudaMalloc(&dx, K*sizeof(float))); CHECK(cudaMalloc(&dout, N*sizeof(float)));
+    float *dxq; CHECK(cudaMalloc(&dxq, K*sizeof(float)));
     CHECK(cudaMalloc(&da4, ha4.size()*4)); CHECK(cudaMalloc(&das16, asum16.size()*4));
     CHECK(cudaMalloc(&das32, asum32.size()*4));
     CHECK(cudaMemcpy(dq2, hq2.data(), q2_bytes, cudaMemcpyHostToDevice));
@@ -315,6 +372,7 @@ int main(int argc, char **argv) {
     CHECK(cudaMemcpy(dq1r, hq1r.data(), q1_bytes, cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(ds, hs.data(), hs.size()*sizeof(half), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(dx, hx.data(), K*sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dxq, hxq.data(), K*sizeof(float), cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(da4, ha4.data(), ha4.size()*4, cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(das16, asum16.data(), asum16.size()*4, cudaMemcpyHostToDevice));
     CHECK(cudaMemcpy(das32, asum32.data(), asum32.size()*4, cudaMemcpyHostToDevice));
@@ -335,10 +393,10 @@ int main(int argc, char **argv) {
     printf("=== validation (first %d rows vs CPU reference) ===\n", NREF);
     bool ok = true;
     { int t = 256, g = (N + t - 1) / t;
-      gemv_q2_v0<<<g, t>>>(dq2, ds, dx, dout, N, K); CHECK(cudaDeviceSynchronize());
+      gemv_q2_v0<<<g, t>>>(dq2, ds, dxq, dout, N, K); CHECK(cudaDeviceSynchronize());
       ok &= check("v0 naive", ref2, 2e-2); }
     { int t = 256, g = (N + t - 1) / t;
-      gemv_q2_v1<<<g, t, K*sizeof(float)>>>(dq2, ds, dx, dout, N, K); CHECK(cudaDeviceSynchronize());
+      gemv_q2_v1<<<g, t, K*sizeof(float)>>>(dq2, ds, dxq, dout, N, K); CHECK(cudaDeviceSynchronize());
       ok &= check("v1 smem activations", ref2, 2e-2); }
     { int t = 256, w = t/32, g = (N + w - 1) / w;
       gemv_q2_v2<<<g, t>>>((const uint32_t*)dq2, ds, da4, das16, da, dout, N, K);
@@ -346,6 +404,10 @@ int main(int argc, char **argv) {
     { int t = 256, w = t/32, g = (N + w - 1) / w;
       gemv_q2_v4<1><<<g, t>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
       CHECK(cudaDeviceSynchronize()); ok &= check("v3 dp4a, interleaved", ref2, 2e-2); }
+    { int t = 256, w = t/32, g = (N + w - 1) / w;
+      size_t sm = ((size_t)(K/16)*4 + (K/16)) * sizeof(int32_t);
+      gemv_q2_v5<<<g, t, sm>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
+      CHECK(cudaDeviceSynchronize()); ok &= check("v5 dp4a + smem acts", ref2, 2e-2); }
     { int t = 256, w = t/32, g = (N + w*8 - 1) / (w*8);
       gemv_q2_v4<8><<<g, t>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
       CHECK(cudaDeviceSynchronize()); ok &= check("v4 dp4a, 8 rows/warp", ref2, 2e-2); }
@@ -365,13 +427,16 @@ int main(int argc, char **argv) {
     };
 
     add("v0 naive", q2_bytes, [=]{ int t=256,g=(N+t-1)/t;
-        gemv_q2_v0<<<g,t>>>(dq2,ds,dx,dout,N,K); });
+        gemv_q2_v0<<<g,t>>>(dq2,ds,dxq,dout,N,K); });
     add("v1 smem activations", q2_bytes, [=]{ int t=256,g=(N+t-1)/t;
-        gemv_q2_v1<<<g,t,K*sizeof(float)>>>(dq2,ds,dx,dout,N,K); });
+        gemv_q2_v1<<<g,t,K*sizeof(float)>>>(dq2,ds,dxq,dout,N,K); });
     add("v2 dp4a GGUF", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
         gemv_q2_v2<<<g,t>>>((const uint32_t*)dq2,ds,da4,das16,da,dout,N,K); });
     add("v3 dp4a interleaved", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
         gemv_q2_v4<1><<<g,t>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
+    add("v5 dp4a + smem acts", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
+        size_t sm = ((size_t)(K/16)*4 + (K/16))*sizeof(int32_t);
+        gemv_q2_v5<<<g,t,sm>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
     add("v4 q2 2 rows/warp", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*2-1)/(w*2);
         gemv_q2_v4<2><<<g,t>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K); });
     add("v4 q2 4 rows/warp", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w*4-1)/(w*4);

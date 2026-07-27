@@ -46,17 +46,108 @@ backend) is the cheap side of the trade.
 | Backend | Correctness | Performance |
 | :-- | :-- | :-- |
 | CPU (NEON) | **bit-exact vs scalar reference** | **measured, below** |
-| CUDA | reference check written, compiles `sm_110a` | **not yet run** |
-| Vulkan | both shaders compile to SPIR-V | **not yet run** |
+| CUDA | **validated, all 7 rungs** | **measured, below** |
+| Vulkan | **validated, both shaders** | **measured, below** |
 
-CUDA and Vulkan are unvalidated on device because the GPU is currently
-unusable: after a suspend/resume cycle, 201 processes are wedged in `D`
-state inside the NVIDIA UVM replayable-fault handler and `nvidia_uvm`'s
-refcount is stuck at 1272, so any new CUDA or Vulkan context hangs. The
-stuck processes are `rustdesk`, not ours, and `nvidia-smi` still reports
-the device healthy at 0% util. **This needs a reboot to clear.** No
-performance claim is made for either GPU backend until it has actually
-run.
+All three backends now decode the same shared packed format to the same
+answer, which is the property the format exists to provide.
+
+## All three backends, one format, one box
+
+The point of the shared format is that the same packed weights decode
+correctly and fast everywhere. That is now measured rather than asserted.
+Best kernel per backend, Q2_0, N=131072 K=8192, GB/s of weight bytes:
+
+| Backend | GB/s | % of the 273 GB/s SoC spec | note |
+| :-- | --: | --: | :-- |
+| CUDA (v5, dp4a + smem acts) | **177.2** | 65% | best overall |
+| Vulkan (portable Tier 1) | 93.3 | 34% | int-dot path unbuildable here |
+| CPU (whole-vector + SDOT, 1T) | 5.8 | 2% | single thread |
+
+Correctness: every backend matches the same CPU reference -- CUDA
+1.2e-07, Vulkan 4.8e-06, NEON bit-exact.
+
+Read the Vulkan number as a floor, not a ceiling: its accelerated
+integer-dot path exists on this device but cannot be compiled by the
+toolchain installed here (see below). The CPU column is single-threaded
+and is included for shape, not as a backend comparison.
+
+## Measured: CUDA, Jetson Thor (sm_110a)
+
+Shape N=131072 K=8192 (256 MiB of Q2_0 weights, 8x the 32 MB L2, so this
+is a genuine streaming test). Full log in `../results/gemv-cuda.txt`.
+
+| Kernel | GB/s | % of 273 GB/s spec |
+| :-- | --: | --: |
+| v0 naive, scalar extract | 16.0 | 6% |
+| v1 + activations in smem | 12.5 | 5% |
+| v2 dp4a, GGUF layout | 167.9 | 61% |
+| v3 dp4a, bit-plane interleaved | 171.2 | 63% |
+| **v5 dp4a + activations in smem** | **177.2** | **65%** |
+| v4 2 rows/warp | 134.5 | 49% |
+| v4 4 rows/warp | 117.0 | 43% |
+| v4 8 rows/warp | 122.5 | 45% |
+| v4 Q1_0, 8 rows/warp | 100.1 | 37% |
+
+**11x from naive to best.** The dp4a step is the whole cliff (16 -> 168);
+the bit-plane repack adds 2%, and staging activations in shared memory
+adds another 3.5%.
+
+### Two results that contradict the research brief
+
+**Row-blocking makes this kernel slower, not faster.** The literature
+pass predicted 8 rows/warp would close the last 25% (158 -> 229 GB/s). It
+does the opposite here: 171 -> 135 -> 117 -> 123 as ROWS goes 1/2/4/8.
+
+The reason is visible in the inner loop. Each 4-byte weight word needs
+four `A4[]` words plus one `ASUM16[]` word -- 20 bytes of activation
+reads per 4 bytes of weights. Those are not DRAM traffic (activations are
+only K bytes and stay resident), but they are load-*issue* traffic, and
+issue slots are what a batch-1 GEMV is short of. So the loop is
+issue-bound, not latency-bound, and adding independent loads cannot hide
+anything -- it only adds register pressure and, for ROWS>1, an
+uncoalesced per-row scale gather.
+
+That diagnosis is what v5 tests directly, and it holds: moving the
+activation reads to shared memory is the only change that improved on
+v3.
+
+**We could not reproduce 229 GB/s (84% of spec).** Our best is 177 GB/s
+(65%), at the same shape the claim was made for. Since the ladder below
+177 matches the predicted shape closely (naive is catastrophic, dp4a is
+the cliff, interleaving helps a little), the gap is most likely in the
+part of the design we could not reconstruct from the summary. **Until it
+is reproduced, 177 GB/s is what this repo claims.**
+
+### What that does to the roofline
+
+At 177 GB/s achieved, ternary decode (6.67 GiB of weights per token) tops
+out near **26 tok/s**, not the ~32 implied by 229 GB/s. The reference
+fork measures 16.77, so it is at **~64% of what our own best kernel would
+allow** -- real headroom, about 1.55x, but materially less than the ~2x
+the research pass suggested. The honest version of the Phase 2 claim is
+"~1.5x from kernel work", not "~2x".
+
+## Measured: Vulkan, Jetson Thor
+
+Same shape, same shared format. Full log in `../results/gemv-vulkan.txt`.
+
+| Shader | GB/s | vs CUDA best |
+| :-- | --: | --: |
+| Q2_0 portable (Tier 1) | 93.3 | 53% |
+| Q1_0 portable (Tier 1) | 71.4 | 40% |
+| Q2_0 / Q1_0 int-dot (Tier 3) | **not built** | -- |
+
+Both validate against the same CPU reference (4.8e-06 and 9.6e-07).
+
+**The int-dot fast path could not be built here.** `glslc` 2023.8
+(shaderc, Ubuntu 24.04) rejects `GL_EXT_integer_dot_product`, while
+Thor's *driver* reports
+`integerDotProduct4x8BitPackedSignedAccelerated = true`. So the
+accelerated path exists on the device but not in this toolchain, and
+93.3 GB/s is a **floor** for this backend rather than its ceiling.
+Building it needs a newer glslc or a Vulkan SDK install. This is exactly
+the toolchain-vs-device split the shader's own header warned about.
 
 ## Measured: CPU (ARM NEON), Jetson Thor, 14x Neoverse V3AE
 
@@ -174,12 +265,19 @@ not the fast path anywhere it matters.
 ## Next, in order
 
 1. **Q1_0 register LUT on CPU** -- the one measured regression above.
-2. **Run and tune the CUDA ladder** once the GPU is back. Research
-   measured 229 GB/s (84% of spec) achievable for this kernel shape on
-   this device, against a reference fork sitting at ~52% of that ceiling.
-3. **Run the Vulkan shaders**, then attack barrier scoping -- measured at
-   ~1.4us narrow vs ~3.9us wide per dispatch, with ~2293 dispatches per
-   token, which is a ~3.9 ms/token floor and the reason speculation loses
-   on that backend.
-4. **Wire the kernels into a decode step** (GDN recurrent layers, GQA
+2. **Close the CUDA gap from 177 GB/s toward the reported 229.** The
+   ladder is built, validated and instrumented, and the diagnosis is
+   specific: the loop is issue-bound on activation reads, not
+   latency-bound. Things not yet tried -- wider (128-bit) weight loads
+   per lane, `cp.async` staging of activations, an L2 persisting window
+   for the activation block, and splitting K across CTAs so the 20 SMs
+   are not wave-quantized at this shape.
+3. **Get a toolchain that can build the Vulkan int-dot path.** The device
+   advertises `integerDotProduct4x8BitPackedSignedAccelerated`; only
+   `glslc` 2023.8 is in the way. This is the single cheapest Vulkan win
+   available and it is currently blocked on a package, not on design.
+4. **Then attack Vulkan barrier scoping** -- ~1.4us narrow vs ~3.9us wide
+   per dispatch, ~2293 dispatches per token, a ~3.9 ms/token floor and
+   the reason speculation loses on that backend.
+5. **Wire the kernels into a decode step** (GDN recurrent layers, GQA
    attention) rather than benchmarking them standalone.
