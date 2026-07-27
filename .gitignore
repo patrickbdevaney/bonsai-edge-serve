@@ -1,0 +1,26 @@
+# Build outputs
+build/
+build-*/
+*.o
+*.so
+*.a
+
+# Models (never commit weights)
+models/
+*.gguf
+
+# Results are committed selectively; raw run dirs are not
+results/raw/
+*.log
+!docs/**/*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
