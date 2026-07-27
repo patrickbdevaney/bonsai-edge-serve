@@ -27,7 +27,7 @@ venv/
 bench/gpu_mem
 bench/bandwidth
 kernels/cuda/gemv_bench
-kernels/cpu/gemv_neon_bench
+kernels/cpu-neon-arm/gemv_neon_bench
 kernels/vulkan/*.spv
 kernels/vulkan/gemv_vk_bench
 kernels/vulkan/*_dot.spv

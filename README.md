@@ -451,7 +451,7 @@ bench/         backend-agnostic harness
   workloads/             code (high-accept) AND prose (low-accept)
 cuda/          primary backend, developed on Thor      [not started]
 vulkan/        hardware-agnostic GPU backend           [not started]
-cpu/           x86 AVX-512 + ARM NEON                  [not started]
+cpu-neon-arm/  ARM NEON backend (x86 AVX-512 is separate)
 docs/METHODOLOGY.md      portable lessons, per backend
 ```
 

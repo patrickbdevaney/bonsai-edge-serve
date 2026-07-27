@@ -317,8 +317,8 @@ and the CPU 1-bit path is where it may have to bend.
 ```bash
 # CPU
 cc -O3 -march=armv8.2-a+dotprod -fopenmp \
-   -o cpu/gemv_neon_bench cpu/gemv_neon_bench.c -lm
-./cpu/gemv_neon_bench 4096 32768 3
+   -o cpu-neon-arm/gemv_neon_bench cpu-neon-arm/gemv_neon_bench.c -lm
+./cpu-neon-arm/gemv_neon_bench 4096 32768 3
 
 # CUDA (needs a working GPU to run)
 nvcc -O3 -arch=sm_110a --extended-lambda -o cuda/gemv_bench cuda/gemv_bench.cu
