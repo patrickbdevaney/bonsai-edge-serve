@@ -1,0 +1,129 @@
+#version 450
+// Batch-1 Q1_0 GEMV, Vulkan compute.
+//
+// Same packed weight format as the CUDA and NEON backends, and -- because
+// dotPacked4x8AccSatEXT consumes a single 32-bit word exactly like CUDA's
+// __dp4a -- the SAME activation layout as CUDA too, with no permutation.
+// Only the NEON backend needs an activation shuffle, because its vector
+// is 16 bytes and spans four weight words.
+//
+// The biased-encoding identity (see ../common/bonsai_gemv.h). Q1_0
+// stores b in {0,1} for values {-1,+1}, so
+//     sum w*x = d*da * ( 2*sum b*a - sum a )
+// The inner loop dots the RAW bits and corrects once per 32-weight word
+// with a precomputed activation sum. No sign handling, no branches.
+// One 32-bit word covers 32 weights: 8 bit positions x 4 byte lanes.
+//
+// Portability notes, both load-bearing:
+//  * dotPacked4x8AccSatEXT is the PACKED form. Thor (and NVIDIA/Adreno/
+//    Intel Arc generally) reports
+//    integerDotProduct4x8BitPackedSignedAccelerated = true while
+//    integerDotProduct8BitSignedAccelerated = false, so the i8vec4 form
+//    is NOT the accelerated path. Always emit the packed uint form.
+//    VK_KHR_shader_integer_dot_product covers ~70% of devices, so a
+//    scalar fallback shader is required for the rest.
+//  * The cross-lane reduction is done in shared memory rather than with
+//    subgroup ops, because subgroup width varies 16..128 across vendors
+//    (Mali 16, NVIDIA 32, AMD reports 64, Adreno 64/128) and cannot be
+//    pinned at all on Apple. A subgroupAdd fast path can be added behind
+//    a feature query; this is the version that runs everywhere.
+//  * Weights live in an SSBO, never a UBO or push constant -- 8-bit
+//    storage in those is broken on about half of Android.
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+
+// Tier 3 fast path when VK_KHR_shader_integer_dot_product is present
+// (~70% of devices) AND the toolchain knows the extension. Compile with
+// -DUSE_INT_DOT to enable. Everything else takes the portable Tier 1
+// path below, which is plain integer arithmetic and runs on any
+// Vulkan 1.1 device.
+#ifdef USE_INT_DOT
+#extension GL_EXT_integer_dot_product : require
+#endif
+
+// Sign-extend byte k of a packed int8x4 word.
+int sb(uint p, int k) { return (int(p << (24 - 8 * k))) >> 24; }
+
+// dot4(codes, acts): codes is 4 unsigned 2-bit values in byte lanes,
+// acts is 4 packed int8. Identical semantics to __dp4a / dotPacked4x8.
+int dot4(uint c, uint a, int acc) {
+#ifdef USE_INT_DOT
+    return dotPacked4x8AccSatEXT(c, a, acc);
+#else
+    acc += int((c      ) & 0xFFu) * sb(a, 0);
+    acc += int((c >>  8) & 0xFFu) * sb(a, 1);
+    acc += int((c >> 16) & 0xFFu) * sb(a, 2);
+    acc += int((c >> 24) & 0xFFu) * sb(a, 3);
+    return acc;
+#endif
+}
+
+#define LANES 32
+#define TEAMS 8
+#define ROWS  4
+
+layout(local_size_x = LANES, local_size_y = TEAMS, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly  buffer Weights { uint  w[]; };   // [N][K/32]
+layout(std430, binding = 1) readonly  buffer Scales  { float s[]; };   // [N][K/128]
+layout(std430, binding = 2) readonly  buffer Acts    { uint  a[]; };   // [K/4] int8x4
+layout(std430, binding = 3) readonly  buffer ASum    { int   asum[]; };// [K/32]
+layout(std430, binding = 4) writeonly buffer Out     { float o[]; };
+
+layout(push_constant) uniform Push {
+    int   N;
+    int   K;
+    float da;
+} pc;
+
+shared float red[TEAMS][ROWS][LANES];
+
+void main() {
+    const int lane = int(gl_LocalInvocationID.x);
+    const int team = int(gl_LocalInvocationID.y);
+    const int row0 = (int(gl_WorkGroupID.x) * TEAMS + team) * ROWS;
+
+    const int nw   = pc.K / 32;
+    const int nblk = pc.K / 128;
+
+    float accf[ROWS];
+    for (int r = 0; r < ROWS; ++r) accf[r] = 0.0;
+
+    if (row0 < pc.N) {
+        for (int widx = lane; widx < nw; widx += LANES) {
+            // Issue all ROWS weight loads before consuming any: these are
+            // independent and this is the whole source of memory-level
+            // parallelism at batch 1.
+            uint v[ROWS];
+            for (int r = 0; r < ROWS; ++r) v[r] = w[(row0 + r) * nw + widx];
+
+            uint av[8];
+            for (int q = 0; q < 8; ++q) av[q] = a[widx * 8 + q];
+            const int cs = asum[widx];
+
+            for (int r = 0; r < ROWS; ++r) {
+                int d = 0;
+                // Bit q selects logical base+4q+0..3 -- four CONSECUTIVE
+                // weights, matching one aligned activation word.
+                for (int q = 0; q < 8; ++q)
+                    d = dot4((v[r] >> q) & 0x01010101u, av[q], d);
+                accf[r] += s[(row0 + r) * nblk + (widx >> 2)] * float(2 * d - cs);
+            }
+        }
+    }
+
+    for (int r = 0; r < ROWS; ++r) red[team][r][lane] = accf[r];
+    barrier();
+
+    for (int off = LANES / 2; off > 0; off >>= 1) {
+        if (lane < off)
+            for (int r = 0; r < ROWS; ++r)
+                red[team][r][lane] += red[team][r][lane + off];
+        barrier();
+    }
+
+    if (lane == 0 && row0 < pc.N) {
+        for (int r = 0; r < ROWS; ++r)
+            if (row0 + r < pc.N) o[row0 + r] = red[team][r][0] * pc.da;
+    }
+}

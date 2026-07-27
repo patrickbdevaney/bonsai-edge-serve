@@ -1,0 +1,42 @@
+shape N=32768 K=4096   Q2_0 32.0 MiB   Q1_0 16.0 MiB
+
+=== validation (first 256 rows vs scalar reference) ===
+  q2 sdot 1 row            max rel err 0.000e+00  OK
+  q2 sdot 4 rows           max rel err 0.000e+00  OK
+  q2 sdot 8 rows           max rel err 0.000e+00  OK
+  q1 sdot 1 row            max rel err 0.000e+00  OK
+  q1 sdot 4 rows           max rel err 0.000e+00  OK
+  q1 sdot 8 rows           max rel err 0.000e+00  OK
+
+=== throughput, single thread (3 iters) ===
+  q2 v0 scalar                90.68 ms     0.37 GB/s
+  q2 sdot 1 row                5.80 ms     5.78 GB/s
+  q2 sdot 2 rows               5.90 ms     5.69 GB/s
+  q2 sdot 4 rows               6.01 ms     5.58 GB/s
+  q2 sdot 8 rows               5.80 ms     5.78 GB/s
+  q1 v0 scalar               483.46 ms     0.03 GB/s
+  q1 sdot 1 row                6.04 ms     2.78 GB/s
+  q1 sdot 4 rows               6.27 ms     2.68 GB/s
+  q1 sdot 8 rows               6.04 ms     2.78 GB/s
+
+=== threaded (8 rows/chain) ===
+  q2 mt t=1                    5.82 ms     5.77 GB/s
+  q2 mt t=2                    4.10 ms     8.19 GB/s
+  q2 mt t=3                    2.90 ms    11.59 GB/s
+  q2 mt t=4                    2.07 ms    16.19 GB/s
+  q2 mt t=6                    1.52 ms    22.06 GB/s
+  q2 mt t=8                    1.48 ms    22.68 GB/s
+  q2 mt t=10                   1.04 ms    32.34 GB/s
+  q2 mt t=12                   0.86 ms    39.13 GB/s
+  q2 mt t=14                   1.93 ms    17.39 GB/s
+  q1 mt t=1                    6.27 ms     2.68 GB/s
+  q1 mt t=2                    4.34 ms     3.86 GB/s
+  q1 mt t=3                    2.96 ms     5.66 GB/s
+  q1 mt t=4                    2.43 ms     6.91 GB/s
+  q1 mt t=6                    1.64 ms    10.21 GB/s
+  q1 mt t=8                    1.20 ms    13.97 GB/s
+  q1 mt t=10                   1.10 ms    15.31 GB/s
+  q1 mt t=12                   0.82 ms    20.36 GB/s
+  q1 mt t=14                   1.15 ms    14.59 GB/s
+
+GB/s counts weight bytes only.
