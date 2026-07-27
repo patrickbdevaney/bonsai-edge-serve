@@ -1,0 +1,8 @@
+config              idle_mW    busy_mW      tok/s    mWh/token
+ternary-native        20228      67685      16.60       1.1328
+ternary-dspark        20525      63602      29.29       0.6031
+onebit-native         20687      61869      18.66       0.9210
+onebit-dspark         21003      64717      32.83       0.5475
+
+VIN is whole-board draw in mW. mWh/token uses busy power and the
+measured decode rate. Compare against whole-device figures only.

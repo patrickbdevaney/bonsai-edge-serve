@@ -1,0 +1,9 @@
+arch         result     notes
+87-real      PASS       
+86-real      PASS       
+110-real     PASS       RUN + validated on this box
+120a-real    PASS       
+121a-real    PASS       
+
+PASS means the CUDA backend compiles for that architecture.
+It is NOT a correctness or performance claim: only sm_110 was run.

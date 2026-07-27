@@ -221,6 +221,49 @@ Bonsai's low-bit formats rather than an unsupported setup. Worth
 reporting upstream -- by a human, since the fork does not accept
 AI-generated contributions.
 
+## Energy per token (Phase 6)
+
+From Jetson's own power rails via `tegrastats`. `VIN` is whole-board
+draw, so this is comparable only against other whole-device figures.
+CUDA backend, 256-token sustained decode.
+
+| Config | idle W | busy W | tok/s | mWh/token | marginal mWh/token |
+| :-- | --: | --: | --: | --: | --: |
+| ternary native | 20.2 | 67.7 | 16.60 | 1.133 | 0.794 |
+| ternary DSpark | 20.5 | 63.6 | 29.29 | **0.603** | 0.409 |
+| 1-bit native | 20.7 | 61.9 | 18.66 | 0.921 | 0.613 |
+| 1-bit DSpark | 21.0 | 64.7 | 32.83 | **0.548** | 0.370 |
+
+**DSpark nearly halves energy per token** (1.133 -> 0.603 ternary, 0.921
+-> 0.548 for 1-bit). It raises throughput at essentially unchanged board
+power, so the speedup converts almost directly into efficiency. That is a
+better argument for speculation on an edge device than the tok/s number
+alone.
+
+Marginal energy subtracts the ~20 W idle floor, which is a large share of
+Thor's ~65 W busy draw. Which column is right depends on the question:
+total for "what does this box cost to run", marginal for "what does
+serving one more token cost".
+
+For scale, PrismML publish 0.275 mWh/token on an M5 Pro. Thor's best here
+is 0.548 total / 0.370 marginal -- roughly 1.3-2x that figure. A dev kit
+with a 20 W idle floor is not built for the same efficiency point as a
+laptop SoC, so this is context rather than a defeat.
+
+## Cross-architecture compile verification (Phase 3)
+
+| Arch | Target | Result |
+| :-- | :-- | :-- |
+| sm_87 | Jetson Orin / Orin Nano Super | compiles |
+| sm_86 | RTX 3090 | compiles |
+| sm_110 | Jetson Thor | compiles, **run and validated** |
+| sm_120a | RTX 5090 | compiles |
+| sm_121a | DGX Spark | compiles |
+
+Reproduce with `cuda/arch/verify_arches.sh`. Compiling is not a
+correctness or performance claim -- only sm_110 was executed. Everything
+else is unvalidated until run on the real part.
+
 ### Published baselines for comparison
 
 From the model cards, measured by PrismML on other hardware. Context, not
@@ -252,6 +295,41 @@ serve as the oracle for a DSpark run, so every backend gate here compares
 like mode against like mode. Whether the cause is Thor-specific numerics
 or general to the fork needs a second device to separate.
 Detail in `docs/METHODOLOGY.md`.
+
+## What is not done, and why
+
+Being explicit so the tables above are not read as more than they are.
+
+**Phase 2 -- the custom CUDA engine with DSpark fused -- has not been
+started.** It is the core build of this repo and it is a large one: a
+weight loader for the packed Q2_0/Q1_0 formats, GDN linear-attention
+kernels for 48 layers, GQA-with-QK-norm kernels for the other 16, and a
+single-launch decode step with draft-and-verify inside one graph replay.
+Everything published here so far measures the *reference fork*, not any
+engine of ours. The work below it is now in place -- oracle traces,
+gates, benchmark harness, memory accounting -- so the engine has
+something to be judged against, which was the point of doing it first.
+
+Three findings from this phase feed directly into that build:
+
+1. The drafter's full-context staging buffer is what blocks 8 GB devices.
+   Sizing it to the draft block is a concrete, measurable win.
+2. Speculation's benefit is entirely a function of per-step dispatch
+   cost. Fusing draft+verify into one launch attacks exactly the overhead
+   that makes Vulkan lose and CPU break even.
+3. An adaptive draft-disable heuristic cannot key on acceptance; it has
+   to measure realised throughput both ways.
+
+**Blocked on hardware not present here:**
+
+- Orin Nano Super (sm_87) and RTX (sm_86/120a/121a) are compile-verified
+  only. No run, no correctness claim, no performance claim.
+- x86 AVX-512 is untested; Thor is ARM.
+- The cross-*device* scaling table (the full GAP 3) needs a second
+  device. What exists today is a cross-*backend* table on one device.
+
+**Open:** whether the temperature-0 DSpark divergence is Thor-specific
+numerics or general to the fork. Separating those needs a second device.
 
 ## Layout
 

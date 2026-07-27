@@ -233,12 +233,57 @@ Sizing that buffer to the draft block rather than the whole context is
 what would make DSpark viable on 8 GB, and it is a concrete target for
 this repo's own engine. Full detail in `results/memory.txt`.
 
-### Power is measurable via tegrastats
+### Power via tegrastats, and the pitfall in measuring it
 
 `tegrastats` exposes per-rail power on Jetson (`VDD_GPU`,
-`VDD_CPU_SOC_MSS`, `VIN_SYS_5V0`, `VIN`), which is what the Phase 6
-energy-per-token column will be built from. Idle GPU draw observed around
-2.4 W, whole-board `VIN` around 23 W under light load.
+`VDD_CPU_SOC_MSS`, `VIN_SYS_5V0`, `VIN`). `VIN` is whole-board draw and
+is the only figure comparable against another whole device.
+`bench/measure_power.sh` samples idle and busy separately and divides by
+the measured decode rate.
+
+Measured, CUDA backend, 256-token sustained decode:
+
+| Config | idle W | busy W | tok/s | mWh/token | marginal |
+| :-- | --: | --: | --: | --: | --: |
+| ternary native | 20.2 | 67.7 | 16.60 | 1.133 | 0.794 |
+| ternary DSpark | 20.5 | 63.6 | 29.29 | 0.603 | 0.409 |
+| 1-bit native | 20.7 | 61.9 | 18.66 | 0.921 | 0.613 |
+| 1-bit DSpark | 21.0 | 64.7 | 32.83 | 0.548 | 0.370 |
+
+DSpark nearly halves energy per token because it raises throughput at
+essentially unchanged board power. Report both columns: Thor's ~20 W idle
+floor is a third of its busy draw, so total and marginal energy answer
+different questions.
+
+Two measurement pitfalls, both hit here:
+
+1. **Do not sample power while anything else runs.** An early reading
+   showed 33 W "idle" because a compile was running in the background.
+   Every figure above comes from a run with nothing else scheduled.
+2. **Check the decode actually produced tokens.** The first version of
+   the script used a prose instruction as its prompt; this model emits
+   EOS immediately on several such prompts, giving zero decode time, a
+   sentinel rate of 1e6 tok/s, and an empty power capture. The script now
+   uses a code prompt and rejects any run producing under 32 tokens
+   rather than reporting a nonsense energy figure.
+
+## Cross-architecture compile verification
+
+`cuda/arch/verify_arches.sh` builds the `ggml-cuda` target -- where all
+architecture-dependent code lives -- for each target arch.
+
+| Arch | Target | Result |
+| :-- | :-- | :-- |
+| sm_87 | Jetson Orin / Orin Nano Super | compiles |
+| sm_86 | RTX 3090 | compiles |
+| sm_110 | Jetson Thor | compiles, run, validated |
+| sm_120a | RTX 5090 | compiles |
+| sm_121a | DGX Spark | compiles |
+
+Compiling is not correctness and not performance. Only sm_110 was
+executed. The `a` suffix is required for 120/121 because Blackwell's FP4
+tensor-core instructions are not forward-compatible; 87, 86 and 110 need
+no suffix, for the reason given in the sm_110 section above.
 
 ## Vulkan
 
