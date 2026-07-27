@@ -353,20 +353,61 @@ not the fast path anywhere it matters.
 
 ## Next, in order
 
-1. **Q1_0 register LUT on CPU** -- the one measured regression above.
-2. **Close the CUDA gap from 177 GB/s toward the reported 229.** The
-   ladder is built, validated and instrumented, and the diagnosis is
-   specific: the loop is issue-bound on activation reads, not
-   latency-bound. Things not yet tried -- wider (128-bit) weight loads
-   per lane, `cp.async` staging of activations, an L2 persisting window
-   for the activation block, and splitting K across CTAs so the 20 SMs
-   are not wave-quantized at this shape.
-3. **Rebuild the llama.cpp fork with glslang >= 16** so ggml-vulkan's own
-   integer-dot path is enabled. Our kernels gained 40% on Q1_0 from it;
-   the backend's shaders should gain independently, and the current
-   Vulkan tok/s figures were all measured with it compiled out.
-4. **Then attack Vulkan barrier scoping** -- ~1.4us narrow vs ~3.9us wide
-   per dispatch, ~2293 dispatches per token, a ~3.9 ms/token floor and
-   the reason speculation loses on that backend.
+Rewritten after measuring; the earlier list had two items that are now
+done and two that turned out to be wrong.
+
+1. **Add `q1_0`/`q2_0` to ggml-vulkan's MMVQ type lists.** This is the
+   highest-value item and it is now precisely located. The toolchain gate
+   is open (glslc 2026.4-dev builds `GL_EXT_integer_dot_product`), but
+   `is_legacy_quant()` at `vulkan-shaders-gen.cpp:226` is
+   `{q4_0,q4_1,q5_0,q5_1,q8_0}` and the MMVQ gate at line 710 admits that
+   set plus mxfp4/k-quants/iq1_s/iq1_m -- so our two formats take the
+   float path regardless. Needs: the type added to both gates, plus
+   `repack()` and `mul_q8_1()` in `mul_mat_vecq_funcs.glsl`. The bias
+   correction is already derived -- Q2_0 codes are `{0,1,2,3}` for
+   `{-1,0,1,2}` so `mul_q8_1 = da*(q_sum*dsb.x - (1/div)*dsb.y)`; Q1_0 is
+   `da*(2*q_sum*dsb.x - (1/div)*dsb.y)`. The catch is that both formats
+   are `QUANT_K = 128` while the legacy quants the framework was built
+   around are 32. Precedent: PR #16536 did this for the k-quants and got
+   Q2_K +78%, Q4_K_S +131%.
+
+2. **Q1_0 register LUT on CPU** -- the one measured kernel regression.
+   Note the structural requirement discovered while scoping it: a T-MAC
+   g=4 table is indexed by the weight nibble but *built from the
+   activations*, so each of the 32 nibble positions in a 128-weight block
+   needs its own table. It only works with the loop order transposed --
+   activation group outer, rows inner -- so the table build amortizes
+   across all N rows. A naive drop-in keeping the current row-outer order
+   will be slower, not faster.
+
+3. **Q2_0 SMMLA 4-row on CPU.** Measured issue rates on this core:
+   `SMMLA` 1.97/cycle at 2x the MACs of `SDOT`, so it is a free 2x
+   wherever M >= 2. Predicted 8.3x kernel, ~2.4x end to end.
+
+4. **Vulkan barrier scoping** -- ~1.4us narrow vs ~3.9us wide per
+   dispatch, ~2293 dispatches per token, a ~3.9 ms/token floor and the
+   reason speculation loses on that backend. Note the entire narrow/wide
+   gap is `VK_ACCESS_INDIRECT_COMMAND_READ_BIT` in `dstAccessMask`;
+   naming the *stage* is free.
+
 5. **Wire the kernels into a decode step** (GDN recurrent layers, GQA
-   attention) rather than benchmarking them standalone.
+   attention) rather than benchmarking them standalone. This is what
+   turns a GB/s number into a tok/s number.
+
+### Closed, with results
+
+- ~~Run the CUDA ladder~~ -- done, 178.5 GB/s best (v5).
+- ~~Get a toolchain that can build the Vulkan int-dot path~~ -- done,
+  glslang 16.4 / shaderc 2026.4-dev from source. Worth +40% on Q1_0 in
+  our own kernels.
+- ~~Rebuild the fork with a newer glslc to lift its Vulkan tok/s~~ --
+  done and **it did not help** (11.62 -> 11.80). Superseded by item 1;
+  see `../results/vulkan-toolchain-rebuild.txt`.
+- ~~128-bit weight loads~~ -- tried, **12% slower** (v6). Weight loads
+  were never the constraint.
+- ~~Row-blocking with shared-memory activations~~ -- tried, **slower**
+  (v7). Row-blocking is wrong for this kernel, not merely mis-tuned.
+
+Still untried from the original list: `cp.async` staging of activations,
+an L2 persisting window for the activation block, and splitting K across
+CTAs so the 20 SMs are not wave-quantized.
