@@ -1,0 +1,69 @@
+CPU (ARM NEON) kernel, threaded -- and what it is worth end to end
+==================================================================
+
+Shape N=32768 K=4096. Full log in gemv-neon.txt; this file adds the
+threaded sweep and converts kernel GB/s into implied decode tok/s.
+
+THREADED SWEEP (GB/s of weight bytes, 8 rows/chain)
+---------------------------------------------------
+  threads    Q2_0     Q1_0
+      1       5.41     2.67
+      2       8.13     3.19
+      4      15.14     7.20
+      6      19.75     8.84
+      8      28.50    13.45
+     10      37.06    17.67   <- Q1_0 peak
+     12      43.90    15.70   <- Q2_0 peak
+     14      23.06    14.09   <- both collapse
+
+The collapse at 14 threads reproduces the earlier end-to-end finding at
+kernel level: taking every core starves the OS and costs roughly half the
+throughput. Note the two formats peak at DIFFERENT thread counts (12 for
+Q2_0, 10 for Q1_0), so a single global default is already a compromise.
+
+WHAT IT IS WORTH END TO END
+---------------------------
+Ternary streams 7.165 GB of weights per token, 1-bit 3.803 GB:
+
+  kernel          GB/s    implied tok/s   llama.cpp now   ratio
+  ternary Q2_0    43.90       6.13            3.18        1.93x
+  1-bit   Q1_0    17.67       4.65            4.85        0.96x
+
+So the two formats are in completely different positions:
+
+* Q2_0 -- our kernel is worth ~1.9x end to end over what llama.cpp's ARM
+  path achieves today. That is the payoff for wiring it in, and it is the
+  single largest available win on this backend.
+
+* Q1_0 -- our kernel is NOT better than what is already there (0.96x,
+  i.e. a wash). The 90x single-thread advantage over per-element extract
+  does not survive to the threaded, end-to-end level, because the Q1_0
+  kernel saturates at 17.67 GB/s while Q2_0 reaches 43.90.
+
+AGAINST THE MACHINE
+-------------------
+Measured CPU-cluster DRAM bandwidth is 126.4 GB/s, giving a ceiling of
+17.6 tok/s (ternary) and 33.2 tok/s (1-bit). Our kernels reach:
+
+  Q2_0   43.90 / 126.4 =  35% of DRAM
+  Q1_0   17.67 / 126.4 =  14% of DRAM
+
+Contrast with CUDA, where v5 reaches ~90% of achievable read bandwidth.
+The CPU backend is nowhere near its memory limit -- it is unpack-ALU
+bound, exactly as the earlier analysis predicted, and Q1_0 is the worse
+of the two by a factor of 2.5.
+
+CONSEQUENCE FOR THE ROADMAP
+---------------------------
+This reorders the CPU work:
+
+1. Q1_0 is the priority, not Q2_0, because Q1_0's kernel is currently
+   worth nothing end to end. The register-LUT rewrite (with the
+   transposed loop order noted in kernels/README.md) is what unblocks it.
+2. Wiring the existing Q2_0 kernel into a decode path is worth ~1.9x and
+   needs no new kernel work at all -- only integration.
+3. Any SMMLA work should target the speculative VERIFY batch, not batch-1
+   decode. SMMLA computes a 2x2 tile: with a single activation vector
+   (M=1) at most half its output is wanted, so it cannot beat SDOT at
+   batch 1. It pays when several tokens are verified together, which is
+   exactly the draft-block case.
