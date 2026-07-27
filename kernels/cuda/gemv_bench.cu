@@ -222,6 +222,56 @@ __global__ void gemv_q2_v7(const uint32_t *__restrict__ W, const half *__restric
     }
 }
 
+// ---------------------------------------------------------------- v8
+// Split-K: divide the reduction dimension across SPLIT CTAs per row.
+//
+// v5 runs one row per warp, 8 warps per block, so the grid is N/8 blocks
+// against ~120 concurrent block slots on this 20-SM part. Measured, that
+// leaves the machine half idle at N=512 (0.53 waves, 46% of the large-N
+// rate). Bonsai's K and V projections are 1024 rows, so this is a real
+// layer shape and not a synthetic corner.
+//
+// Each block now owns (row, k-chunk) and atomically accumulates its
+// partial dot. `out` must be zeroed first. Only the block's own slice of
+// the activations is staged, so shared memory shrinks by SPLIT as well.
+__global__ void gemv_q2_v8(const uint32_t *__restrict__ W, const half *__restrict__ S,
+                           const int32_t *__restrict__ A4, const int32_t *__restrict__ ASUM16,
+                           float da, float *__restrict__ out, int N, int K, int split) {
+    extern __shared__ int32_t sh8[];
+    const int nw = K / 16;
+    const int per = (nw + split - 1) / split;      // words per k-chunk
+    const int kc  = blockIdx.y;                     // which chunk
+    const int w_lo = kc * per;
+    int w_hi = w_lo + per; if (w_hi > nw) w_hi = nw;
+    const int n_loc = w_hi - w_lo;
+    if (n_loc <= 0) return;
+
+    int32_t *sA4 = sh8;
+    int32_t *sAS = sh8 + (size_t)n_loc * 4;
+    for (int i = threadIdx.x; i < n_loc * 4; i += blockDim.x) sA4[i] = A4[(size_t)w_lo * 4 + i];
+    for (int i = threadIdx.x; i < n_loc;     i += blockDim.x) sAS[i] = ASUM16[w_lo + i];
+    __syncthreads();
+
+    const int row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x / 32);
+    const int lane = threadIdx.x & 31;
+    if (row >= N) return;
+    const uint32_t *w = W + (size_t)row * nw;
+    const half *s = S + (size_t)row * (K / BONSAI_QK);
+    float acc = 0.f;
+    for (int i = lane; i < n_loc; i += 32) {
+        const int widx = w_lo + i;
+        const uint32_t v = w[widx];
+        int dot = 0;
+        dot = __dp4a(unpack4_q2(v, 0), sA4[i * 4 + 0], dot);
+        dot = __dp4a(unpack4_q2(v, 2), sA4[i * 4 + 1], dot);
+        dot = __dp4a(unpack4_q2(v, 4), sA4[i * 4 + 2], dot);
+        dot = __dp4a(unpack4_q2(v, 6), sA4[i * 4 + 3], dot);
+        acc += __half2float(s[widx / 8]) * (float)(dot - sAS[i]);
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_down_sync(0xffffffff, acc, o);
+    if (lane == 0) atomicAdd(&out[row], acc * da);
+}
+
 // ---------------------------------------------------------------- v6
 // v5, but each lane loads 16 bytes of weights at a time instead of 4.
 //
@@ -546,6 +596,13 @@ int main(int argc, char **argv) {
       size_t sm = ((size_t)(K/16)*4 + (K/16)) * sizeof(int32_t);
       gemv_q2_v6<<<g, t, sm>>>((const uint4*)dq2r, ds, da4, das16, da, dout, N, K);
       CHECK(cudaDeviceSynchronize()); ok &= check("v6 dp4a + uint4 loads", ref2, 2e-2); }
+    for (int SP : {4}) { int t = 256, w = t/32;
+      int per = ((K/16) + SP - 1) / SP;
+      size_t sm = ((size_t)per*4 + per) * sizeof(int32_t);
+      dim3 g((N + w - 1)/w, SP);
+      CHECK(cudaMemset(dout, 0, N*sizeof(float)));
+      gemv_q2_v8<<<g, t, sm>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K, SP);
+      CHECK(cudaDeviceSynchronize()); ok &= check("v8 split-K x4", ref2, 2e-2); }
     { int t = 256, w = t/32, g = (N + w*2 - 1) / (w*2);
       size_t sm = ((size_t)(K/16)*4 + (K/16)) * sizeof(int32_t);
       gemv_q2_v7<2><<<g, t, sm>>>((const uint32_t*)dq2r, ds, da4, das16, da, dout, N, K);
@@ -584,6 +641,17 @@ int main(int argc, char **argv) {
     add("v6 dp4a + uint4 loads", q2_bytes, [=]{ int t=256,w=t/32,g=(N+w-1)/w;
         size_t sm = ((size_t)(K/16)*4 + (K/16))*sizeof(int32_t);
         gemv_q2_v6<<<g,t,sm>>>((const uint4*)dq2r,ds,da4,das16,da,dout,N,K); });
+    {
+      int per4 = ((K/16) + 3) / 4, per8 = ((K/16) + 7) / 8;
+      size_t sm4 = ((size_t)per4*4 + per4)*sizeof(int32_t);
+      size_t sm8 = ((size_t)per8*4 + per8)*sizeof(int32_t);
+      add("v8 split-K x4", q2_bytes, [=]{ int t=256,w=t/32; dim3 g((N+w-1)/w, 4);
+          cudaMemsetAsync(dout, 0, N*sizeof(float));
+          gemv_q2_v8<<<g,t,sm4>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K,4); });
+      add("v8 split-K x8", q2_bytes, [=]{ int t=256,w=t/32; dim3 g((N+w-1)/w, 8);
+          cudaMemsetAsync(dout, 0, N*sizeof(float));
+          gemv_q2_v8<<<g,t,sm8>>>((const uint32_t*)dq2r,ds,da4,das16,da,dout,N,K,8); });
+    }
     // Note: names must be distinct storage, not a reused stack buffer --
     // add() keeps the pointer.
     {

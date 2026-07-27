@@ -137,3 +137,43 @@ So splitting K across CTAs -- the one untried CUDA lever we had not
 justified -- is now justified, and specifically for the small-N
 projections rather than as a general optimization. The large matmuls
 (N >= 5120) are already at ~5 waves and need nothing.
+
+SPLIT-K: IMPLEMENTED AND REJECTED
+---------------------------------
+The wave-quantization table above motivated split-K, so it was built
+(v8: each block owns (row, k-chunk), atomicAdd into a zeroed output,
+staging only its own slice of activations). Measured at N=1024, the real
+KV-projection shape:
+
+  v5 dp4a + smem acts     128.1 GB/s
+  v7 smem acts + 2 rows   155.3 GB/s
+  v8 split-K x4            77.7 GB/s
+  v8 split-K x8            52.1 GB/s
+
+Split-K is roughly half the speed of doing nothing, and it gets worse
+with more splits.
+
+Two honest caveats on that measurement. First, the required
+`cudaMemsetAsync` sits inside the timed region; at ~3 us of launch
+overhead against a 17 us kernel that is worth perhaps 20%, which does not
+come close to closing a 128 vs 78 gap. Second, N=1024 x K=5120 is 2.5
+MiB and therefore L2-resident, so this is the regime where v7 wins
+anyway.
+
+The more interesting result is that v7 -- which has FEWER blocks than v5
+(N/16 vs N/8) -- is the fastest thing at N=1024. That is the opposite of
+what the occupancy argument predicts, and it means the small-N slowdown
+is not purely wave quantization. At these sizes the matrix is L2-resident
+and activation reuse dominates, exactly as the crossover sweep showed.
+
+PRACTICAL CONCLUSION: SHAPE-ADAPTIVE SELECTION
+----------------------------------------------
+Rather than one kernel plus split-K, the engine should pick by footprint:
+
+  weights < ~32 MB (L2-resident)   -> v7, rows per warp
+  weights > ~32 MB (streaming)     -> v5, one row per warp
+
+For a real decode step every matrix is read once across ~3.8 GB, so the
+streaming rule governs and v5 is the default. The v7 path is worth
+keeping for any case where a matrix genuinely stays resident -- small
+models, or a deliberately pinned tensor.
