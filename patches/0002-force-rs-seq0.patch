@@ -1,0 +1,28 @@
+diff --git a/common/common.h b/common/common.h
+index 920246546..f085d1de7 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -380,6 +380,23 @@ struct common_params_speculative {
+             return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+         });
+ 
++        // EXPERIMENT (bonsai-edge-serve): force the rollback ring to zero.
++        // The ring costs (1 + n_rs_seq) copies of the target's recurrent
++        // state -- measured 149.62 -> 748.12 MiB at n_rs_seq=4 -- plus the
++        // same factor replicated in the compute graph (138 -> 863 MiB).
++        // Setting it to 0 is NOT the silent-corruption case the comment
++        // above warns about: the server checks
++        //   use_ckpt_tgt = ... || n_rollback > llama_n_rs_seq(ctx_tgt)
++        // (server-context.cpp) and falls back to a host-side state
++        // checkpoint restore for every partial acceptance. That trades
++        // ~1.3 GB of device buffers for a state memcpy per round, which on
++        // a unified-memory Jetson is DRAM-to-DRAM rather than over PCIe.
++        if (const char * e = getenv("BONSAI_FORCE_RS_SEQ0")) {
++            if (atoi(e) != 0) {
++                return 0u;
++            }
++        }
++
+         return needs_rs_seq ? draft.n_max : 0u;
+     }
+ };

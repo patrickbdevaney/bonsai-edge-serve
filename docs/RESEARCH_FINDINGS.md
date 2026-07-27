@@ -98,8 +98,14 @@ which is the 138 -> 863 MiB growth. **Setting `n_rs_seq = 0` falls back to
 host-side state checkpoints that are already implemented** [L,
 `server-context.cpp:2738`, `3620`], recovering ~1.3 GB. On Jetson's
 unified memory that "host" copy is a DRAM memcpy, not a PCIe transfer, so
-the tradeoff is far better here than on a discrete GPU. **This is the
-highest-leverage untried experiment and requires no new code.**
+the tradeoff is far better here than on a discrete GPU. ~~**This is the highest-leverage untried experiment and requires no new
+code.**~~ **TESTED AND REJECTED.** It saves exactly the predicted 1324
+MiB and costs 59% of throughput, because the fallback branch `continue`s
+past `common_speculative_accept()` and rewinds to the checkpoint rather
+than the accepted position. 1-bit *native* is both smaller (4173 MiB) and
+faster (18.61 tok/s) than 1-bit DSpark with this knob (5996 MiB, 13.55
+tok/s), so the knob is dominated everywhere. See `results/memory-knobs.txt`
+and WIKI S6.
 
 ### 1.3 Zero-memory speculation already ships in this fork
 
