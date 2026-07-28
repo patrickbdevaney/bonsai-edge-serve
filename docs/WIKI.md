@@ -42,7 +42,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `2a2bd75` |
 | W24 | **State checkpoints make multi-turn prefix reuse work on a hybrid model** | TTFT 1.557s -> 0.360s (4.3x), restored output character-identical to a fresh prefill | `189e1eb` |
 | W25 | Closed the last 5 Vulkan divergences: near-ties, not errors | gaps 0.002-0.065 nats; CPU flips the same 2 prompts at the same tokens | `389f5db` |
-| W26 | **Wide loads shipped in ggml MMVQ: Vulkan now ties/beats CUDA** | Q2_0 15.76 -> 16.75 (CUDA 16.77), Q1_0 19.03 -> 20.27 (CUDA 19.03) | `pending` |
+| W26 | **Wide loads shipped in ggml MMVQ: Vulkan now ties/beats CUDA** | Q2_0 15.76 -> 16.75 (CUDA 16.77), Q1_0 19.03 -> 20.27 (CUDA 19.03) | `70be7e3` |
 
 ---
 
