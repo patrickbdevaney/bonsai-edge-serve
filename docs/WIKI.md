@@ -35,7 +35,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `ae75cd9` |
 | W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `92d3886` |
 | W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `92d3886` |
-| W19 | **Pure-C++ single-binary OpenAI server** (`bonsai-server`) | 20/20 smoke gate; policy, reasoning split, streaming, web UI, terminal client | `pending` |
+| W19 | **Pure-C++ single-binary OpenAI server** (`bonsai-server`) | 20/20 smoke gate; policy, reasoning split, streaming, web UI, terminal client | `5e72084` |
 
 ---
 
