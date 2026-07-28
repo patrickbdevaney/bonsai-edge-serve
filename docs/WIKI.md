@@ -30,7 +30,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W11 | CUDA GEMV is near-optimal | 212-220 GB/s vs 244.7 achievable = ~90% | `94df1be` |
 | W12 | Shape-adaptive kernel selection rule | v7 <32MB (L2), v5 >32MB (streaming) | `3f8c4e2` |
 | W13 | Four candidate optimizations tested and rejected on evidence | uint4 loads, row-blocking (streaming), split-K, `n_rs_seq=0` | various |
-| W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `pending` |
+| W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `a47598b` |
 
 ---
 
