@@ -41,7 +41,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W22 | q8_0 KV cache is free on this model | 262144 ctx: KV 16384 -> 8704 MiB (-47%), throughput unchanged, greedy output identical | `03d1a8f` |
 | W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `2a2bd75` |
 | W24 | **State checkpoints make multi-turn prefix reuse work on a hybrid model** | TTFT 1.557s -> 0.360s (4.3x), restored output character-identical to a fresh prefill | `189e1eb` |
-| W25 | Closed the last 5 Vulkan divergences: near-ties, not errors | gaps 0.002-0.065 nats; CPU flips the same 2 prompts at the same tokens | `pending` |
+| W25 | Closed the last 5 Vulkan divergences: near-ties, not errors | gaps 0.002-0.065 nats; CPU flips the same 2 prompts at the same tokens | `389f5db` |
 
 ---
 
