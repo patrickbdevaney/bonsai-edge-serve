@@ -126,15 +126,39 @@ For scale, Q2_0 CPU prefill was 4.04 tok/s -- slower than Q1_0's non-repack
 11.89 by 2.9x for only 1.89x the bytes, and barely faster than its own
 decode. It is now 15.76, ahead of Q1_0's non-repack path.
 
+PORTABILITY: DOTPROD FALLBACK FOR Armv8.2 (e.g. JETSON ORIN)
+--------------------------------------------------------------
+The gemm's first version used i8mm (`vmmlaq_s32`), so the selector had to
+gate on `matmul_int8`. i8mm is Armv8.6+. Cortex-A76/A78 are Armv8.2 and do
+NOT have it -- which includes **Jetson Orin (A78AE), a device this repo
+explicitly targets**. That gate would have given Orin the non-repack path
+and none of the win, silently.
+
+A DOTPROD-only gemm now backs the i8mm one, so the selector gates on
+`dotprod` instead. Measured by forcing the fallback on this box
+(`BONSAI_Q2_0_NO_I8MM=1`):
+
+  gemm path                      pp64    tg16   vs no repack
+  no repack                      4.04    3.28        --
+  DOTPROD (Armv8.2 class)        8.94    5.03    2.21x / 1.53x
+  i8mm    (Armv8.6+)            16.05    5.06    3.97x / 1.54x
+
+i8mm is worth another 1.8x on prefill, but DOTPROD is worth 2.21x over
+nothing. Decode is identical (5.03 vs 5.06) because it uses the gemv, which
+only ever needed DOTPROD.
+
+That number prices the instruction set, not the device: it is i8mm hardware
+running the DOTPROD path. An actual A78 differs in cores, caches and
+bandwidth. See docs/PORTABILITY.md.
+
 VALIDATION
 ----------
 `kernels/cpu-neon-arm/run_q2_0_repack_test.sh` links the real
 libggml-cpu.so and compares each kernel against the generic reference it
 replaces -- not a reimplementation of it, which could drift:
 
-  gemv q2_0 4x8   max rel err 8.447e-07   OK
-  gemm q2_0 4x8   max rel err 6.763e-05   OK
-  gemv all-code-{0,1,2,3}  (w = -1,0,+1,+2)   OK
+  100 shapes (K x NC x NR), both gemm paths, 0 failed
+  gemv 1.0e-07   gemm 1.3e-07   all-code-{0,1,2,3} (w = -1,0,+1,+2)  OK
 
 The degenerate all-one-code cases are there because a bias or offset error
 is exactly what uniformly random codes average away. And on the real model,

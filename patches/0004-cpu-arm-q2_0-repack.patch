@@ -15,7 +15,7 @@ index 25089f1e4..c95cd211b 100644
  // quants.c
  #define ggml_vec_dot_nvfp4_q8_0_generic ggml_vec_dot_nvfp4_q8_0
 diff --git a/ggml/src/ggml-cpu/arch/arm/repack.cpp b/ggml/src/ggml-cpu/arch/arm/repack.cpp
-index ad0e5ccaf..e29fbcb44 100644
+index ad0e5ccaf..bb4184ef5 100644
 --- a/ggml/src/ggml-cpu/arch/arm/repack.cpp
 +++ b/ggml/src/ggml-cpu/arch/arm/repack.cpp
 @@ -64,6 +64,28 @@ static inline int8x16_t ggml_q1_0_unpack_pair(uint8_t bits0, uint8_t bits1) {
@@ -149,7 +149,7 @@ index ad0e5ccaf..e29fbcb44 100644
  void ggml_gemm_q4_0_4x4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
      const int qk = QK8_0;
      const int nb = n / qk;
-@@ -5463,3 +5580,107 @@ void ggml_gemm_q1_0_4x8_q8_0(int                        n,
+@@ -5463,3 +5580,207 @@ void ggml_gemm_q1_0_4x8_q8_0(int                        n,
  
      ggml_gemm_q1_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
  }
@@ -183,7 +183,16 @@ index ad0e5ccaf..e29fbcb44 100644
 +    UNUSED(nb);
 +    UNUSED(ncols_interleaved);
 +
++    // i8mm is Armv8.6+. Plenty of ARM parts that matter here have DOTPROD but
++    // not i8mm -- Cortex-A76/A78 class, which includes Jetson Orin (A78AE,
++    // Armv8.2). Without a DOTPROD gemm below, the selector could only enable
++    // q2_0 repack on i8mm hardware, and every such device would silently fall
++    // back to the non-repack path and get none of the 3.9x prefill win.
++    // BONSAI_Q2_0_NO_I8MM=1 forces the DOTPROD path on hardware that has both,
++    // which is how the fallback is tested and costed on this box.
 +#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_MATMUL_INT8)
++    static const bool no_i8mm = getenv("BONSAI_Q2_0_NO_I8MM") != nullptr;
++    if (!no_i8mm) {
 +    for (int y = 0; y < nr / 4; y++) {
 +        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (4 * y * nb);
 +
@@ -253,12 +262,103 @@ index ad0e5ccaf..e29fbcb44 100644
 +        }
 +    }
 +    return;
++    }
++#endif
++
++    // DOTPROD-only gemm: same layout, same table, no i8mm.
++    //
++    // vmmlaq_s32 produced a 2x2 tile of dot products per instruction. vdotq_s32
++    // produces 4 independent lane sums, so a column's 8 weights are duplicated
++    // into a 16-byte vector and dotted against an activation pair -- yielding
++    // two rows' partial sums per instruction. That is 32 dot instructions per
++    // sub-block against i8mm's 16, and it needs a 4x4 int32 transpose at the
++    // end because the accumulators come out per-COLUMN while the output wants
++    // per-ROW. Still far ahead of the scalar generic.
++#if defined(__aarch64__) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
++    for (int y = 0; y < nr / 4; y++) {
++        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (4 * y * nb);
++
++        for (int x = 0; x < nc / ncols_interleaved; x++) {
++            const block_q2_0x4 * b_ptr = (const block_q2_0x4 *) vx + (x * nb);
++
++            float32x4_t sumf[4];
++            for (int m = 0; m < 4; ++m) {
++                sumf[m] = vdupq_n_f32(0);
++            }
++
++            for (int l = 0; l < nb; l++) {
++                const float32x4_t b_d = vcvt_f32_f16(vld1_f16((const float16_t *) b_ptr[l].d));
++                float32x4_t blockf[4];
++                for (int m = 0; m < 4; ++m) {
++                    blockf[m] = vdupq_n_f32(0);
++                }
++
++                for (int k = 0; k < 4; ++k) {
++                    const block_q8_0x4 * GGML_RESTRICT a_blk = a_ptr + 4 * l + k;
++                    const uint8_t *      GGML_RESTRICT b_qs  = (const uint8_t *) b_ptr[l].qs + k * 32;
++
++                    // acc01[j] holds rows 0,1 for column j; acc23[j] rows 2,3.
++                    int32x4_t acc01[4], acc23[4];
++                    for (int j = 0; j < 4; ++j) {
++                        acc01[j] = vdupq_n_s32(0);
++                        acc23[j] = vdupq_n_s32(0);
++                    }
++
++                    for (int chunk = 0; chunk < 4; ++chunk) {
++                        const int8x16_t a01 = vld1q_s8(a_blk->qs + chunk * 32);
++                        const int8x16_t a23 = vld1q_s8(a_blk->qs + chunk * 32 + 16);
++
++                        for (int j = 0; j < 4; ++j) {
++                            // Column j's 8 weights, duplicated into both halves,
++                            // so one vector serves both activation rows.
++                            const int8x16_t bj = ggml_q2_0_unpack_quad(b_qs,
++                                    j * 8 + 2 * chunk, j * 8 + 2 * chunk + 1,
++                                    j * 8 + 2 * chunk, j * 8 + 2 * chunk + 1);
++                            acc01[j] = vdotq_s32(acc01[j], a01, bj);
++                            acc23[j] = vdotq_s32(acc23[j], a23, bj);
++                        }
++                    }
++
++                    // Fold each row's two lane-halves, giving per column j the
++                    // vector [row0, row1, row2, row3].
++                    int32x4_t col[4];
++                    for (int j = 0; j < 4; ++j) {
++                        col[j] = vpaddq_s32(acc01[j], acc23[j]);
++                    }
++
++                    // 4x4 transpose: per-column -> per-row.
++                    const int32x4x2_t t01 = vtrnq_s32(col[0], col[1]);
++                    const int32x4x2_t t23 = vtrnq_s32(col[2], col[3]);
++                    const int32x4_t row0 = vcombine_s32(vget_low_s32 (t01.val[0]), vget_low_s32 (t23.val[0]));
++                    const int32x4_t row1 = vcombine_s32(vget_low_s32 (t01.val[1]), vget_low_s32 (t23.val[1]));
++                    const int32x4_t row2 = vcombine_s32(vget_high_s32(t01.val[0]), vget_high_s32(t23.val[0]));
++                    const int32x4_t row3 = vcombine_s32(vget_high_s32(t01.val[1]), vget_high_s32(t23.val[1]));
++
++                    const float32x4_t a_d = vcvt_f32_f16(vld1_f16((const float16_t *) a_blk->d));
++
++                    blockf[0] = vfmaq_laneq_f32(blockf[0], vcvtq_f32_s32(row0), a_d, 0);
++                    blockf[1] = vfmaq_laneq_f32(blockf[1], vcvtq_f32_s32(row1), a_d, 1);
++                    blockf[2] = vfmaq_laneq_f32(blockf[2], vcvtq_f32_s32(row2), a_d, 2);
++                    blockf[3] = vfmaq_laneq_f32(blockf[3], vcvtq_f32_s32(row3), a_d, 3);
++                }
++
++                for (int m = 0; m < 4; ++m) {
++                    sumf[m] = vfmaq_f32(sumf[m], blockf[m], b_d);
++                }
++            }
++
++            for (int m = 0; m < 4; ++m) {
++                vst1q_f32(s + (y * 4 + m) * bs + x * 4, sumf[m]);
++            }
++        }
++    }
++    return;
 +#endif
 +
 +    ggml_gemm_q2_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
 +}
 diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
-index ef2265251..51599380e 100644
+index ef2265251..02a562b78 100644
 --- a/ggml/src/ggml-cpu/repack.cpp
 +++ b/ggml/src/ggml-cpu/repack.cpp
 @@ -5134,6 +5134,15 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
@@ -307,18 +407,19 @@ index ef2265251..51599380e 100644
          if (ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8()) {
              if (cur->ne[1] % 4 == 0) {
                  return &q1_0_4x8_q8_0;
-@@ -5355,6 +5387,18 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+@@ -5355,6 +5387,19 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
                  return &q2_0_4x8_q8_0;
              }
          }
 +        if (getenv("BONSAI_NO_ARM_REPACK")) {
 +            return nullptr;
 +        }
-+        // ARM. Requires i8mm because selecting this trait routes BOTH gemv and
-+        // gemm through the repack kernels: with only DOTPROD the gemm would
-+        // fall back to the scalar generic and prefill would regress hard. So
-+        // the gate matches the weaker of the two kernels, not the stronger.
-+        if (ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8()) {
++        // ARM. DOTPROD is enough: the gemv needs only vdotq_s32, and the gemm
++        // has both an i8mm path and a DOTPROD fallback, so selecting this trait
++        // never routes prefill through the scalar generic. Gating on i8mm here
++        // would exclude every Armv8.2 part -- Cortex-A76/A78, which is what
++        // Jetson Orin runs -- and silently give them the non-repack path.
++        if (ggml_cpu_has_neon() && ggml_cpu_has_dotprod()) {
 +            if (cur->ne[1] % 4 == 0) {
 +                return &q2_0_4x8_q8_0;
 +            }
