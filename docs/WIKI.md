@@ -41,6 +41,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W22 | q8_0 KV cache is free on this model | 262144 ctx: KV 16384 -> 8704 MiB (-47%), throughput unchanged, greedy output identical | `03d1a8f` |
 | W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `2a2bd75` |
 | W24 | **State checkpoints make multi-turn prefix reuse work on a hybrid model** | TTFT 1.557s -> 0.360s (4.3x), restored output character-identical to a fresh prefill | `189e1eb` |
+| W25 | Closed the last 5 Vulkan divergences: near-ties, not errors | gaps 0.002-0.065 nats; CPU flips the same 2 prompts at the same tokens | `pending` |
 
 ---
 
@@ -424,6 +425,37 @@ not a win. Caching, reordering and reuse optimisations all make things
 faster *by doing less work*, so "faster" is exactly what a broken one looks
 like. Pair every such change with an output-equality assertion against the
 unoptimised path -- here, four lines of gate.
+
+### L12. Post-divergence drift measures nothing -- and it was the headline number
+
+The trace gate reports `max|dlogprob|` over a whole trace. On a diverged
+trace that is dominated by drift AFTER the divergence, where the two runs
+are generating different text and their logprobs are not comparable at all.
+Vulkan's headline "worst drift 2.18" was almost entirely this artefact.
+
+Measured before the first divergence instead -- the only region where the
+two runs are answering the same question -- Vulkan is 0.131 worst-case and
+CPU is 0.058. Same order of magnitude, both ordinary quantisation and
+reduction-order noise.
+
+That reframing closed the last open Vulkan correctness question. All 5
+remaining divergences land on tokens where the model is undecided: top1-top2
+gaps of 0.0024 to 0.0651 nats, i.e. odds between 1.002:1 and 1.067:1. Across
+the oracle's 2048 tokens the median gap is 4.712 nats and only 1.17% are
+that close -- but at 1.17% per token, a 128-token trace has a 78% chance of
+containing one, so **12.5 of 16 traces would diverge if ties flipped
+independently. We see 5.**
+
+The clinching evidence needed no statistics: **CPU and Vulkan diverge on the
+same two prompts, at the same token, with pre-divergence drift agreeing to
+three decimals** (coastal-town tok 41: 0.0567 vs 0.0573; history-canal tok
+29: 0.0423 vs 0.0423). Those are properties of the model, not of a backend.
+
+Generalizable: **a comparison metric has to be computed over the region
+where the two things are still comparable.** Summarising a whole trace after
+the runs have forked measures how far apart two different texts are, which
+is not what the gate is for -- and it made a numerically ordinary backend
+look broken for as long as it was the number being quoted.
 
 ### L9. A gate run against a nondeterministic system measures nothing
 

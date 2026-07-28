@@ -1,0 +1,86 @@
+The last 5 Vulkan divergences are near-ties, not errors
+=======================================================
+
+After the graph_optimize race was fixed, the trace gate went from 1/16
+reproducing the CUDA oracle to 11/16, and this repo recorded the remaining
+5 as "real divergences, unexplained". They are now explained, and the answer
+is that they are not errors.
+
+WHERE THEY OCCUR
+----------------
+Every one lands on a token where the model is almost exactly undecided:
+
+  prompt                    tok    CUDA           Vulkan          top1-top2 gap
+  code/c-matmul              78    ' &&'          ';'                  0.0651
+  code/cuda-reduce           96    ' blockDim'    ' warp'              0.0024
+  prose/coastal-town         41    ' anticipation' ' an'               0.0251
+  prose/history-canal        29    ' sever'       ' drastically'       0.0143
+  prose/travel-highlands     37    ' Season'      ' Time'              0.0263
+
+A gap of 0.065 nats is a probability ratio of 1.067 -- a 52:48 coin flip.
+0.0024 nats is 1.002:1.
+
+HOW OFTEN THE MODEL IS THAT UNDECIDED
+--------------------------------------
+Across all 2048 scored tokens in the oracle:
+
+  median top1-top2 gap    4.712 nats      (the model is usually certain)
+  gap <= 0.0050            0.05% of tokens
+  gap <= 0.0250            0.49%
+  gap <= 0.0651            1.17%
+
+So a near-tie is rare per token but common per trace: at 1.17%, the chance
+that a 128-token trace contains at least one is **78%**, and the expected
+number of diverging traces out of 16 is **12.5** if every tie flipped.
+
+**We observe 5.** The Vulkan kernels therefore agree with CUDA at most
+near-ties and diverge at a minority of them. The divergence rate is not
+merely explainable -- it is well below what independent tie-breaking would
+produce.
+
+THE STRONGER EVIDENCE: CPU DIVERGES AT THE SAME PLACES
+-------------------------------------------------------
+Comparing both non-CUDA backends against the same oracle, and measuring the
+drift BEFORE the first divergence (after it, everything downstream differs,
+so post-divergence drift measures nothing):
+
+  backend                identical   worst pre-divergence |dlogprob|
+  Vulkan (deterministic)   11/16                 0.1312
+  CPU (NEON)               13/16                 0.0584
+
+  diverging trace          Vulkan             CPU
+  prose/coastal-town       tok 41, 0.0567     tok 41, 0.0573
+  prose/history-canal      tok 29, 0.0423     tok 29, 0.0423
+  code/c-matmul            tok 78, 0.0266     --
+  code/cuda-reduce         tok 96, 0.0345     --
+  prose/travel-highlands   tok 37, 0.0057     --
+  prose/philosophy-memory  --                 tok  6, 0.0512
+
+**Two prompts flip on BOTH backends, at the same token, with the same
+pre-divergence drift to three decimals.** Those points are a property of the
+model, not of any backend: at token 41 of coastal-town the model is
+genuinely undecided and any kernel with a different summation order lands on
+the other side.
+
+WHAT THIS SAYS ABOUT THE GATE
+------------------------------
+The gate reports `max|dlogprob|` over the whole trace and fails at 0.05. On
+a diverged trace that figure is dominated by POST-divergence drift (up to
+2.18), which measures nothing -- once the token differs, the two runs are
+generating different text and their logprobs are not comparable.
+
+The meaningful number is the pre-divergence drift, and there Vulkan is
+0.131 worst-case against CPU's 0.058. Same order of magnitude, both
+consistent with quantisation and reduction-order noise.
+
+CONCLUSION
+----------
+Vulkan is a numerically ordinary backend. The remaining 5 divergences are
+float reassociation at coin-flip tokens, the same phenomenon as the CPU
+backend's 3, and two of them are literally the same tokens. There is no
+outstanding Vulkan correctness defect in this data.
+
+What would still be worth doing: report pre-divergence drift in the gate
+rather than whole-trace max, so the number tracks numerical agreement rather
+than tie density. As it stands a backend can be flawless and still "fail"
+because the model was undecided at token 41 of a prose prompt.

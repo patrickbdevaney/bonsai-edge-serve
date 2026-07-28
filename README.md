@@ -265,8 +265,26 @@ now the same kind of backend as CPU rather than a broken one**, which
 retires the earlier verdict that "CPU is a credible backend, Vulkan is
 not yet."
 
-The gate still reports FAIL at its 0.05 tolerance. That is correct and
-should stay: 5 real divergences remain and are not explained.
+The gate still reports FAIL at its 0.05 tolerance, but the 5 remaining
+divergences are now **explained, and they are not errors**. Every one lands
+on a token where the model is essentially undecided -- top1-top2 gaps of
+0.0024 to 0.0651 nats, i.e. probability ratios between 1.002 and 1.067.
+
+Across the oracle's 2048 scored tokens the median gap is 4.712 nats, and
+only 1.17% are that close. But at 1.17%, a 128-token trace has a **78%**
+chance of containing one, so 12.5 of 16 traces would diverge if every tie
+flipped independently. We observe 5 -- fewer than chance would give.
+
+The decisive evidence is that **CPU and Vulkan diverge on the same two
+prompts, at the same token, with the same pre-divergence drift**
+(coastal-town tok 41: 0.0567 vs 0.0573; history-canal tok 29: 0.0423 vs
+0.0423). Those points are properties of the model, not of a backend.
+
+Measuring drift *before* the first divergence -- after it, the two runs are
+generating different text and their logprobs are not comparable -- gives
+Vulkan 0.131 worst-case against CPU's 0.058. Same order, both consistent
+with quantisation and reduction-order noise.
+`results/vulkan-divergence-explained.txt`.
 
 Worth stating plainly: a correctness gate run against a nondeterministic
 backend does not measure correctness. "15/16" was never a property of the
