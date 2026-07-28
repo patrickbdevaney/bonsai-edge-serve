@@ -47,7 +47,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
 | W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
 | W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | `f738f35` |
-| W33 | **All three backends' speculation behaviour reduced to one constant each** | R = 2.18 (CUDA) / ~4.9 (CPU) / ~7.3 (Vulkan); Vulkan's breakeven alpha* ~1.57 > 1, so it can never win | `fd7de9e` |
+| W33 | **All three backends' speculation behaviour reduced to one constant each** | R: CUDA 2.18, CPU 4.9/6.0, Vulkan 7.3/8.9. alpha* > 1 on 4 of 6 configs -- incl. one measured at 100% acceptance still returning 0.79x | `fd7de9e` |
 | W32 | **Q2_0 ARM NEON repack kernels shipped** | CPU-only prefill 4.04 -> 15.76 tok/s (**3.90x**), decode 3.28 -> 5.08 (1.55x); validated vs ggml's own generic, greedy output character-identical | `fe3fdbe` |
 | W31 | **Found every CPU number in this repo was the wrong path** | CUDA host buft outranks repack even at `-ngl 0`; 1-bit CPU decode is 6.80 tok/s, not 4.85 (+40%) | `efff926` |
 
@@ -1121,15 +1121,41 @@ constant on the other two backends turns the repo's oldest empirical
 finding -- "speculation pays on exactly one of three backends" -- into a
 closed-form statement.
 
-| Backend | R | alpha* = (R-1)/4 | verdict |
+| Backend | ternary R (alpha*) | 1-bit R (alpha*) | verdict |
 | :-- | --: | --: | :-- |
-| CUDA | 2.18 | 0.296 | wide margin; 1.49-1.80x |
-| CPU (NEON) | ~4.9 | ~0.97 | effectively never |
-| Vulkan | ~7.3 | ~1.57 | **impossible at any alpha** |
+| CUDA | 2.18 (0.296) | 2.18 (0.295) | wide margin; 1.49-1.80x |
+| CPU (NEON) | ~4.9 (0.97) | ~6.0 (**1.33**) | never / impossible |
+| Vulkan | ~7.3 (**1.54**) | ~8.85 (**1.96**) | **impossible at any alpha** |
 
-Each R came from two prompts whose acceptance differs 3x (0.950 vs 0.321)
-and whose speedups differ 2x, agreeing to within 4-6%. The constant is
-real.
+Each R came from prompts whose acceptance differs 3-4x and whose speedups
+differ 2-3x, agreeing to within 4-13%. The constant is real.
+
+**Correction to the first version of this entry, which said R is a property
+of the hardware.** It is not: it is a property of the (backend, target,
+drafter) triple. That generalisation came from CUDA, where ternary and
+1-bit give 2.184 and 2.179. On CPU and Vulkan the target moves R by ~22%.
+The mechanism is in the numbers -- the drafter is the same ~1.8 GB model
+in both variants, so its absolute cost is fixed while R is denominated in
+target decode steps; when the target speeds up, R rises:
+
+| | native ternary -> 1-bit | R ternary -> 1-bit |
+| :-- | --: | --: |
+| CPU | 5.19 -> 7.01 (1.35x) | 4.9 -> 6.0 (1.22x) |
+| Vulkan | 14.02 -> 18.10 (1.29x) | 7.3 -> 8.85 (1.21x) |
+| CUDA | 16.77 -> 19.03 (1.13x) | 2.18 -> 2.18 (1.00x) |
+
+CUDA does not move because it is not bandwidth-bound at batch 1 -- halving
+the weights buys only 1.13x -- and its drafter is launch-latency-bound the
+same way the target is, so the ratio holds.
+
+The surviving claim is the weaker, more useful one: **R is constant across
+WORKLOADS**, which is what makes it predictive, and must be re-measured
+when the target changes on any bandwidth-bound backend.
+
+A corollary that matters for planning: anything making the TARGET faster
+makes speculation LESS attractive, since R is denominated in target steps
+while the drafter's cost is fixed. The Q2_0 ARM kernels landed this session
+(W32) push CPU speculation further out of reach, not closer.
 
 **Vulkan's alpha* exceeds 1.0.** A perfect drafter accepting every token
 would still yield 5 tokens for 7.3 steps of work. So no drafter swap, no
@@ -1137,14 +1163,18 @@ workload change and no tuning can make speculation profitable on Vulkan --
 which converts S2's empirical "DSpark is a net loss on Vulkan, on every
 configuration" into a statement with a reason attached.
 
-**CPU's alpha* ~0.97 means the same in practice.** The code prompt accepts
-95.0% -- better than anything measured on CUDA -- and still returns 0.954x.
+**CPU means the same in practice, and 1-bit proves it outright.** On
+ternary alpha* ~0.97 and a 95.0%-acceptance prompt still returns 0.954x.
+On 1-bit alpha* = 1.33, and the code prompt accepted **100.0%** of its
+draft tokens -- a perfect drafter -- and still returned 0.790x. The ceiling
+is structural, not a drafter-quality problem, and that is as direct a
+demonstration as the data can give.
 
-Acceptance came back byte-identical across backends (alpha 0.950,
-tokens_per_round 4.80 on CPU and Vulkan for the same prompt), as it must:
-it is a property of model, drafter and prompt. **R is the property of the
-hardware.** Separating the two is what makes one measurement per backend
-predictive rather than anecdotal.
+Acceptance came back byte-identical across backends (alpha 0.950 / 4.80
+tok per round on ternary, 1.000 / 5.00 on 1-bit, same prompts), as it must:
+it is a property of model, drafter and prompt, while R is a property of the
+execution. Separating the two is what makes one measurement per
+configuration predictive across all workloads rather than anecdotal.
 
 Why R varies: speculation is a bet that widening the batch from 1 row to
 (1+block) rows is cheap. CUDA at batch 1 is latency-bound, so the extra

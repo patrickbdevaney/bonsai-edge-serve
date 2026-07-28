@@ -166,20 +166,26 @@ yields `1 + block_size*alpha` tokens and costs `R` plain decode steps, so
 breakeven is `alpha* = (R-1)/block_size`. Measuring R independently on
 prompts whose acceptance differs 3x gives the same value each time:
 
-| Backend | R (decode steps per round) | breakeven `alpha*` | verdict |
+| Backend | ternary R (`alpha*`) | 1-bit R (`alpha*`) | verdict |
 | :-- | --: | --: | :-- |
-| CUDA | 2.18 | **0.296** | wide margin -- 1.49-1.80x measured |
-| CPU (NEON) | ~4.9 | ~0.97 | effectively never; 95.0% acceptance still gives 0.95x |
-| Vulkan | ~7.3 | **~1.57** | **cannot win at any acceptance rate** |
+| CUDA | 2.18 (**0.296**) | 2.18 (**0.295**) | wide margin -- 1.49-1.80x measured |
+| CPU (NEON) | ~4.9 (0.97) | ~6.0 (**1.33**) | never / impossible |
+| Vulkan | ~7.3 (**1.54**) | ~8.85 (**1.96**) | **cannot win at any acceptance rate** |
 
-Vulkan's breakeven exceeds 1.0, so no drafter, workload or tuning can make
-speculation profitable there -- a perfect drafter would still yield 5 tokens
-for 7.3 steps of work. Acceptance is identical across backends (it is a
-property of the model and prompt); **R is the property of the hardware**, and
-it is what decides. Speculation is a bet that widening the batch is cheap, so
-the more efficiently a backend already uses the device at batch 1, the worse
-the bet -- which is why the *slowest* backend here has the second-worst R.
-See `results/spec-round-cost.txt`.
+**On four of these six configurations `alpha*` exceeds 1.0, so no drafter,
+workload or tuning can make speculation profitable** -- a perfect drafter
+would still yield 5 tokens for 7.3-8.9 steps of work. That is not a
+projection: CPU/1-bit accepted **100.0%** of draft tokens on the code prompt
+and still returned 0.790x.
+
+R is constant across *workloads* (prompts differing 3-4x in acceptance agree
+to 4-13%), which is what makes it predictive. It is **not** constant across
+targets except on CUDA -- the drafter is the same ~1.8 GB model either way,
+so when the target speeds up, R rises. Speculation is a bet that widening the
+batch is cheap, so the more efficiently a backend already uses the device at
+batch 1, the worse the bet -- which is why the *slowest* backend here has the
+second-worst R, and why making the target faster makes speculation *less*
+attractive. See `results/spec-round-cost.txt`.
 
 **Vulkan native has closed the gap to CUDA, and the 1-bit build passes
 it.** The Vulkan rows moved after the integer-dot MMVQ path was

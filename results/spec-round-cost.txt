@@ -6,7 +6,10 @@ pays on exactly one of three backends" -- CUDA 1.37-1.75x, CPU 0.79-1.07x,
 Vulkan 0.33-0.43x. Same weights, same drafter, same box. It was observed and
 never explained.
 
-It is now explained, and the explanation is a single constant per backend.
+It is now explained, and the explanation is a single constant per
+configuration -- one that also shows the ceiling is structural: on four of
+the six (backend, variant) pairs measured, speculation cannot win at ANY
+acceptance rate, including one where a perfect drafter was observed.
 
 THE MODEL
 ---------
@@ -17,51 +20,93 @@ number R of plain autoregressive decode steps. So
     breakeven:  1 + block_size * alpha = R   ->   alpha* = (R - 1) / block_size
 
 R is measured, not assumed: R = tokens_per_round / speedup, computed
-independently on every run. If R is a property of the backend, the same value
-must fall out of prompts with very different acceptance.
+independently on every run. If R is a genuine constant, the same value must
+fall out of prompts with very different acceptance.
 
-MEASURED (ternary Q2_0, block_size 4, greedy, in-process DSpark)
------------------------------------------------------------------
-  backend / prompt   native   spec   tok/round   speedup      R    alpha*
-  CUDA (10 runs)      16.7   varies    varies     varies    2.18    0.296
-  Vulkan code        14.02    9.41      4.80       0.671    7.15    1.538
-  Vulkan prose       15.22    4.70      2.29       0.309    7.42    1.604
-  CPU code            5.19    4.95      4.80       0.954    5.03    1.008
-  CPU prose           5.14    2.49      2.29       0.484    4.73    0.932
+MEASURED (block_size 4, greedy, in-process DSpark, both variants)
+-------------------------------------------------------------------
+  backend  case             native   spec   tok/rnd  speedup      R   alpha*
+  CUDA     ternary (10 runs)                                    2.18   0.296
+  CUDA     1-bit   (10 runs)                                    2.18   0.295
+  Vulkan   ternary code      14.02   9.41     4.80    0.671    7.15   1.538
+  Vulkan   ternary prose     15.22   4.70     2.29    0.309    7.42   1.604
+  Vulkan   1-bit   code      18.10   9.82     5.00    0.543    9.22   2.054
+  Vulkan   1-bit   prose     17.92   4.31     2.04    0.241    8.48   1.870
+  CPU      ternary code       5.19   4.95     4.80    0.954    5.03   1.008
+  CPU      ternary prose      5.14   2.49     2.29    0.484    4.73   0.932
+  CPU      1-bit   code       7.01   5.54     5.00    0.790    6.33   1.332
+  CPU      1-bit   prose      7.00   2.53     2.04    0.361    5.64   1.161
 
-Two prompts whose acceptance differs by 3x (alpha 0.950 vs 0.321) and whose
-measured speedups differ by 2x produce the same R on each backend, to within
-4% on Vulkan and 6% on CPU. On CUDA the same constant held across ten runs
-spanning a 2.3x range of speedups (2.136-2.219). The model holds.
+R IS STABLE ACROSS PROMPTS, NOT ACROSS TARGETS
+------------------------------------------------
+Within a backend AND target, prompts whose acceptance differs 3-4x (alpha
+0.26 to 1.00) and whose speedups differ 2-3x give the same R to within 4-13%.
+That is the predictive part: measure R once, and every future prompt's
+speedup follows from its acceptance alone.
 
-  CUDA      R = 2.18    alpha* = 0.296
-  CPU       R ~ 4.9     alpha* ~ 0.97
-  Vulkan    R ~ 7.3     alpha* ~ 1.57
+But R is NOT invariant to the target, and an earlier version of this file
+said it was. That generalisation came from CUDA, where ternary and 1-bit
+gave 2.184 and 2.179 -- indistinguishable. On the other two backends the
+target matters:
+
+  backend   ternary R   1-bit R   change
+  CUDA         2.18       2.18     none
+  CPU          ~4.9       ~6.0     +22%
+  Vulkan       ~7.3       ~8.85    +21%
+
+**So R is a property of the (backend, target, drafter) triple, not of the
+hardware alone.** The corrected claim is the weaker and more useful one: R is
+constant across WORKLOADS, which is what makes it predictive; it must be
+re-measured when the target changes, on any backend that is bandwidth-bound.
+
+The mechanism is visible in the same numbers. The drafter is the SAME model
+in both variants (~1.8 GB Q4_1), so its absolute cost per round is fixed,
+while R is measured in units of target decode steps. When the target gets
+faster, that fixed cost buys fewer steps and R rises:
+
+  backend   native ternary -> 1-bit   R ternary -> 1-bit
+  CPU          5.19 -> 7.01  (1.35x)     4.9 -> 6.0  (1.22x)
+  Vulkan      14.02 -> 18.10  (1.29x)    7.3 -> 8.85 (1.21x)
+  CUDA        16.77 -> 19.03  (1.13x)   2.18 -> 2.18 (1.00x)
+
+CPU and Vulkan move together, and by roughly the amount the target sped up.
+CUDA does not move because it is not bandwidth-bound at batch 1: halving the
+weights buys only 1.13x there, and the drafter is launch-latency-bound in the
+same way the target is, so the ratio holds.
+
+SUMMARY, AND IT IS WORSE THAN THE FIRST PASS SUGGESTED
+--------------------------------------------------------
+  CUDA    ternary  alpha* 0.296     1-bit  alpha* 0.295    speculation wins
+  CPU     ternary  alpha* 0.97      1-bit  alpha* 1.33     never / impossible
+  Vulkan  ternary  alpha* 1.54      1-bit  alpha* 1.96     impossible
 
 WHAT THIS SAYS
 --------------
-**Vulkan's alpha* exceeds 1.0, so speculation there cannot win at any
-acceptance rate whatsoever.** Not "loses on our workloads" -- cannot win. A
-perfect drafter accepting every token would still produce 5 tokens per round
-at a cost of 7.3 steps. That is the whole of the repo's Vulkan speculation
+**Vulkan's alpha* exceeds 1.0 on BOTH variants, and so does CPU's on 1-bit,
+so speculation on those cannot win at any acceptance rate whatsoever.** Not
+"loses on our workloads" -- cannot win. A perfect drafter accepting every
+token would still produce 5 tokens per round at a cost of 7.3-8.9 steps. That is the whole of the repo's Vulkan speculation
 finding, in one number, and it means no tuning, drafter swap or workload
 change will rescue it. The correct action is the one the policy layer already
 takes: refuse to speculate on Vulkan, and say why.
 
-**CPU's alpha* ~ 0.97 means it effectively never wins either.** The code
-prompt here accepts 95.0% of draft tokens -- extraordinarily high, better than
-anything measured on CUDA -- and still comes out at 0.954x. Needing 97%
-acceptance to break even is not a threshold any real workload clears. The old
-table's CPU rows (1.07x on one cell) are within noise of exactly this.
+**CPU never wins either.** On ternary, alpha* ~0.97: the code prompt accepts
+95.0% of draft tokens -- extraordinarily high, better than anything measured
+on CUDA -- and still comes out at 0.954x. On 1-bit, alpha* = 1.33 and the
+code prompt accepted **100.0%** of its draft tokens, a perfect drafter, and
+still returned 0.790x. That is the cleanest possible demonstration that the
+ceiling is structural rather than a drafter-quality problem.
 
 **Only CUDA has room.** alpha* = 0.296 against typical acceptance of
 0.43-0.91 is a wide margin, which is why CUDA measures 1.49-1.80x.
 
-Acceptance is identical across backends, as it must be: alpha 0.950 and
-tokens_per_round 4.80 came back byte-identical from the CPU and Vulkan runs
-on the same prompt. Acceptance is a property of the model, drafter and
-prompt. **R is the property of the hardware.** Separating them is what makes
-a single measurement per backend predictive instead of anecdotal.
+Acceptance is identical across backends, as it must be: alpha 0.950 /
+tok_per_round 4.80 (ternary) and 1.000 / 5.00 (1-bit) came back
+byte-identical from the CPU and Vulkan runs on the same prompts. Acceptance
+is a property of the model, drafter and prompt; R is a property of the
+execution -- the (backend, target, drafter) triple. Separating the two is
+what makes one measurement per configuration predictive across all workloads
+instead of anecdotal.
 
 WHY R DIFFERS SO MUCH
 ----------------------
@@ -75,12 +120,18 @@ one drafter pass. What varies is how much a 5-row batch costs relative to a
     batch is close to 5x the arithmetic with no spare parallelism to hide it,
     and the drafter is a second model on the same cores. R ~ 4.9.
   * Vulkan pays per-dispatch overhead the repo measured earlier, and the
-    drafter's own dispatches are not amortised by anything. R ~ 7.3.
+    drafter's own dispatches are not amortised by anything. R ~ 7.3-8.9.
 
 The general shape: **speculation is a bet that widening the batch is cheap.
 The more efficiently a backend already uses the device at batch 1, the worse
 that bet gets.** A backend being slow does not make speculation profitable --
 CPU is the slowest of the three and has the second-worst R.
+
+Note this also predicts the direction for future work: anything that makes
+the TARGET faster (better kernels, a smaller quantisation) makes speculation
+LESS attractive, because R is denominated in target steps while the drafter's
+cost is fixed. The Q2_0 ARM repack kernels landed this session raise CPU
+prefill 3.9x -- and in doing so push CPU speculation further out of reach.
 
 METHOD NOTE: THE FIRST REQUEST ON VULKAN IS NOT A MEASUREMENT
 ---------------------------------------------------------------
