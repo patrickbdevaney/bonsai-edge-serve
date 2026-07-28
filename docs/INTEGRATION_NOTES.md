@@ -1,13 +1,17 @@
-# Integration notes: two blocked items, de-risked
+# Integration notes
 
-Both remaining high-value items were scoped to the point where the actual
-obstacle is known. Neither is shipped, because both have a specific way
-of being silently wrong and neither is verified. Written so the next
-attempt starts past the reverse-engineering.
+Item 1 (Vulkan MMVQ for `q2_0`) is **SHIPPED and measured**: +34.1% decode.
+Item 2 (the CPU Q1_0 register LUT) is still blocked, and is scoped here to
+the point where the actual obstacle is known, so the next attempt starts
+past the reverse-engineering rather than repeating it.
+
+Both were written up the same way for a reason: each had a specific way of
+being *silently* wrong, and in item 1 both of those ways actually happened
+before it worked.
 
 ---
 
-## 1. ggml-vulkan MMVQ for `q1_0` / `q2_0`
+## 1. ggml-vulkan MMVQ for `q2_0` -- SHIPPED (`q1_0` still open)
 
 **Earlier claim, now corrected:** we said the blocker was `QUANT_K = 128`
 against a framework built for 32. **That was wrong.** The framework
@@ -76,7 +80,7 @@ cache untouched.
 plausible numbers*. It would be caught only by a numerical check against
 a reference.
 
-### STATUS: extraction implemented and gated -- and it is faster
+### Extraction implemented and gated -- and it is faster
 
 The correct form is now built and validated in our own harness
 (`kernels/vulkan/gemv_q2.comp`, `-DGGUF_ORDER`), against the same CPU
@@ -93,66 +97,62 @@ So the integration needs **no repack, no new weight layout, no on-disk
 change** -- only `unpack_gguf()` plus the type added to the three gates.
 Copy the function verbatim; it is tested.
 
-### ATTEMPTED END TO END -- and there is a THIRD gate
+### SHIPPED. Five gates, and the fifth is silent by design
 
-The integration was implemented in the fork and it does not yet work.
-`patches/0003-WIP-vulkan-q2_0-mmvq.patch` holds it; the fork itself has
-been reverted and re-verified correct.
+The integration works and is measured: **tg128 11.75 -> 15.76 tok/s
+(+34.1%)** on Ternary-Bonsai-27B-Q2_0, same binary, toggled with
+`GGML_VK_DISABLE_MMVQ`. Fork changes are in
+`patches/0003-vulkan-q2_0-mmvq.patch` (ggml-vulkan only, reverse-applies
+cleanly). Full write-up: `results/vulkan-mmvq-q2_0.txt`.
 
-**A third gate exists that none of the earlier analysis found.** Even
-with the shader generated and the type in the shader-generator lists, the
-runtime never creates a pipeline for it. Registration is explicit, per
-type, in `ggml-vulkan.cpp` (~line 4655):
+There are **five** gates, not the four previously listed:
 
-```
-pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_0][i]
-```
+1. toolchain -- glslc implements `GL_EXT_integer_dot_product`
+2. shader-gen -- type in the MMVQ / q8_1 lists (`~710`, `~1150`)
+3. `K_PER_ITER` -- type must land in a size class in `mul_mat_vecq.comp`
+4. runtime -- an explicit `ggml_vk_create_pipeline` call (`~4655`)
+5. runtime -- the type must **also** be in the `b_type == GGML_TYPE_Q8_1`
+   allow-list atop `ggml_vk_get_dequantize_mul_mat_vec` (`~6874`)
 
-and the set covers Q4_0..Q8_0, the k-quants, mxfp4 and iq1_s/m -- not
-Q2_0. So the gate list is:
+Gate 5 is the one to remember. Its `default:` is `return nullptr`, and the
+caller treats `nullptr` as "use the float path" -- not as an error. With
+gates 1-4 open and gate 5 shut, the shader compiles, the SPIR-V is in the
+`.so`, the pipeline is created, generation is **correct**, and throughput
+is **unchanged**. There is no error anywhere. It was found only by A/B
+toggling and getting 11.58 vs 11.61 tok/s, i.e. by a null result where a
+win was expected. See WIKI L8.
 
-1. toolchain -- glslc implements `GL_EXT_integer_dot_product`  DONE
-2. shader-gen -- type in the MMVQ/MMQ lists                    DONE
-3. runtime -- an explicit `ggml_vk_create_pipeline` call        DONE
-4. `K_PER_ITER` -- the type must fall in a size class           DONE
+### The index arithmetic was right; the STRUCT was the bug
 
-All four are now open, and the path demonstrably dispatches: adding the
-registration changed the output. It changed it to **degenerate repetition
-of the prompt**, so the index arithmetic is wrong.
+Confirmed by controlled experiment, both arms built with nothing else
+changed:
 
-**CORRECTION.** A follow-up "alignment fix" was applied by a script whose
-`replace` calls silently matched nothing, because the tree had already
-been reverted. It built, ran, and produced correct output and normal
-throughput -- all of which were the BASELINE. The integration was not
-present. See WIKI L7. The struct-alignment hypothesis below is therefore
-**untested**, not confirmed.
+| shader-side view | `test-backend-ops -o MUL_MAT` (q2_0) |
+| :-- | :-- |
+| `block_q2_0_packed32` (`uint32_t qs[]`) | 11 OK, 17 FAIL, NMSE 1.33-2.35 |
+| `block_q2_0_packed16` (`uint16_t qs[]`) | 28 OK, 0 FAIL |
 
-**Where the error must be.** The standalone shader is validated
-(4.783e-06) and its extraction is byte-for-byte the same, so
-`unpack_gguf` is not the problem. What differs is the addressing:
+A Q2_0 block is 2 + 32 = 34 bytes, hence only 2-byte aligned; a `uint32_t`
+member forces std430 alignment 4 and pads the array stride to 36,
+misreading every block after the first. Q4_0 (18 bytes) uses `packed16` for
+exactly this reason. The addressing `ib_a / 4`, `(ib_a % 4) * 2 + iqs` was
+correct all along -- reading the caller settles it: `a_block_idx` counts
+32-quant units and `b_qs_idx = tid % (32 / K_PER_ITER)` is 0 or 1.
 
-```glsl
-data_a_packed32[ib_a / 4].qs[(ib_a % 4) * 2 + iqs]
-```
+### How to gate this, and two gates that do not work
 
-Reading the caller settles the index semantics and they were RIGHT:
-`a_block_idx = (ibi + col)/QUANT_K_Q8_1` counts 32-quant units, and
-`b_qs_idx = tid % (32 / K_PER_ITER)` is 0 or 1. So `ib_a / 4`,
-`(ib_a % 4) * 2 + iqs` is correct addressing.
+`GGML_VK_FORCE_MMVQ=1 test-backend-ops -o MUL_MAT -b Vulkan0` -> 28 OK,
+0 FAIL (10 at `n=1`). The `FORCE` is mandatory: every shape in the suite is
+`k <= 1024` and `ggml_vk_should_use_mmvq` returns false for `k <= 4096` on
+NVIDIA, so the tests otherwise pass without running the kernel.
 
-The remaining suspect is the **struct**, not the arithmetic. A Q2_0 block
-is 2 (fp16) + 32 = **34 bytes**, only 2-byte aligned, so a `uint32_t qs[]`
-member is padded to a 36-byte stride and misreads every block. Q4_0 (18
-bytes) uses `packed16` for exactly this reason. The fix is a
-`block_q2_0_packed16` with `uint16_t qs[16]`, assembling each word with
-`pack32(u16vec2(qs[wi], qs[wi+1]))`. **Untested -- see the CORRECTION
-above.**
-
-Superseded note: the next attempt should instrument `iqs`, e.g. by writing `ib_a` and `iqs` to the
-output buffer from a debug shader, which settles it in one run.
-
-Everything else -- extraction, bias correction, gate sites, size class --
-is now known good or known located. This is the last unknown.
+Do **not** gate on perplexity (pure prefill -- gave identical `PPL =
+11.6848` while measuring nothing) or on greedy text diff alone (the
+integer-dot path changes summation order, so near-ties flip legitimately;
+1 of 4 prompts matched 160/160 tokens exactly and another diverged at
+character 83 of ~700). Coverage limit worth stating: the op tests cover
+`k = 256` and `k = 1024`, while production shapes are `k = 5120` and
+`17408`.
 
 ### Bias correction, already derived
 

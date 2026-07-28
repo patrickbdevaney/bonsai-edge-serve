@@ -30,6 +30,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W11 | CUDA GEMV is near-optimal | 212-220 GB/s vs 244.7 achievable = ~90% | `94df1be` |
 | W12 | Shape-adaptive kernel selection rule | v7 <32MB (L2), v5 >32MB (streaming) | `3f8c4e2` |
 | W13 | Four candidate optimizations tested and rejected on evidence | uint4 loads, row-blocking (streaming), split-K, `n_rs_seq=0` | various |
+| W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `pending` |
 
 ---
 
@@ -118,6 +119,82 @@ Q2_0 block is 2 + 32 = 34 bytes, so only 2-byte aligned, and a `uint32_t`
 member is padded to a 36-byte stride that misreads every block. That is
 why Q4_0 (18 bytes) uses a packed16 view. It is now recorded as untested
 rather than as a fix.
+
+**RESOLVED (W14).** The hypothesis was right, and it is now tested rather
+than argued. Both arms were built with nothing else changed:
+
+| shader-side view | `test-backend-ops -o MUL_MAT` (q2_0) |
+| :-- | :-- |
+| `block_q2_0_packed32` (`uint32_t qs[]`) | 11 OK, **17 FAIL**, NMSE 1.33-2.35 |
+| `block_q2_0_packed16` (`uint16_t qs[]`) | **28 OK, 0 FAIL** |
+
+against a 5.0e-4 threshold. The lasting practice change is the one this
+entry asked for: `bench/verify_vulkan_q2_0.sh` now asserts every edit is
+physically present in the tree, and it earned its keep immediately -- on
+the restore after the experiment above, `git checkout` plus a patch that
+failed to apply left the tree half-reverted, and the gate caught it before
+a single number was taken.
+
+### L8. A gate whose failure mode is silence BY DESIGN
+
+The same integration then produced a *second* false success, and this one
+had nothing to do with scripts or reverts -- the code was genuinely there.
+
+`ggml_vk_get_dequantize_mul_mat_vec` opens with a `switch (a_type)` guarded
+by `if (b_type == GGML_TYPE_Q8_1)`, whose `default:` is `return nullptr`.
+Q2_0 was not in that list. And the caller reads:
+
+```c
+vk_pipeline dmmv = quantize_y ? ggml_vk_get_..._mul_mat_vec(...Q8_1...) : nullptr;
+if (dmmv == nullptr) {
+    // Fall back to f16 dequant mul mat
+    dmmv = ggml_vk_get_..._mul_mat_vec(..., src1->type, ...);
+    quantize_y = false;
+}
+```
+
+`nullptr` is not an error. It is a supported answer meaning "use the float
+path." So with every other gate open: shader compiles, SPIR-V ships in the
+`.so`, pipeline is created, generation is correct, throughput is unchanged.
+Nothing anywhere reports a problem. The only available reading is "the
+kernel runs and happens not to be faster" -- which was wrong, and cost a
+34% win.
+
+Caught by toggling `GGML_VK_DISABLE_MMVQ=1` on the same binary and getting
+11.58 vs 11.61 tok/s. A *null* result was the bug signal.
+
+**Generalizable.** When a subsystem has both a supported-types list and a
+graceful fallback, absence from the list is indistinguishable from
+presence-without-benefit. Every "no speedup" conclusion about such a
+subsystem needs a positive proof of dispatch before it is believed -- and
+an A/B toggle on one binary is the cheapest such proof, because it also
+rules out "did the build change?" at the same time. Treat "we integrated it
+and it didn't help" as an unfinished measurement, not a finding.
+
+This is the mirror image of L6: there, a failure was reported as a pass;
+here, a *non-event* was reported as a pass. Both come from trusting the
+absence of an error message.
+
+### L8b. The obvious correctness gates measured nothing
+
+Two gates were tried on this kernel and are invalid, both for the same
+reason -- they never execute it:
+
+- **Perplexity.** `llama-perplexity` evaluates in `n_ctx`-sized batches, so
+  it is pure prefill and never calls `mul_mat_vec`. MMVQ on vs off gave
+  `PPL = 11.6848` both, identical to four decimals across all 12 chunks.
+  That reads as overwhelming agreement and is in fact a measurement of
+  nothing. The same reason `pp512` is flat (345.10 vs 344.94): prefill goes
+  through `mul_mm`/MMQ, a *different* gate that this work did not open.
+
+- **`test-backend-ops` at default settings.** Every MUL_MAT shape in the
+  suite is `k <= 1024`, and `ggml_vk_should_use_mmvq` returns false for
+  `k <= 4096` on NVIDIA. All tests pass without touching the kernel.
+  `GGML_VK_FORCE_MMVQ=1` is mandatory, and with it the suite becomes the
+  real gate: 28 OK / 0 FAIL, 10 of them at `n=1`.
+
+A flat control is only reassuring once you have shown the control *can*
+move.
 
 ### L6. A launch failure reported as a PASS
 

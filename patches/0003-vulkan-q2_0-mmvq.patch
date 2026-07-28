@@ -1,0 +1,148 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index fd22aba11..914ab452e 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4652,6 +4652,10 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+                 const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
+                 const uint32_t wg_size_subgroup_int = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size_int : (subgroup_size_int * 4);
+ 
++                // Q2_0 (Bonsai ternary): integer-dot MMVQ path. Registration is
++                // explicit per type -- generating the shader is not enough, the
++                // runtime silently falls back to dequant-MMV without this line.
++                ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q2_0][i], "mul_mat_vec_q2_0_q8_1_f32", arr_dmmv_q2_0_q8_1_f32_len[reduc], arr_dmmv_q2_0_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_0][i], "mul_mat_vec_q4_0_q8_1_f32", arr_dmmv_q4_0_q8_1_f32_len[reduc], arr_dmmv_q4_0_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_1][i], "mul_mat_vec_q4_1_q8_1_f32", arr_dmmv_q4_1_q8_1_f32_len[reduc], arr_dmmv_q4_1_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q5_0][i], "mul_mat_vec_q5_0_q8_1_f32", arr_dmmv_q5_0_q8_1_f32_len[reduc], arr_dmmv_q5_0_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
+@@ -6868,6 +6872,13 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
+ 
+     if (b_type == GGML_TYPE_Q8_1) {
+         switch (a_type) {
++            // Q2_0 (Bonsai ternary). Omitting a type here is a SILENT
++            // fallback, not an error: the caller sees nullptr and quietly
++            // reverts to the f32 dequant path (ggml_vk_mul_mat_q_f16,
++            // "Fall back to f16 dequant mul mat"). The symptom is therefore
++            // unchanged tok/s rather than a crash -- indistinguishable from
++            // "the kernel dispatched and is simply no faster".
++            case GGML_TYPE_Q2_0:
+             case GGML_TYPE_Q4_0:
+             case GGML_TYPE_Q4_1:
+             case GGML_TYPE_Q5_0:
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
+index 6fe3e2dc0..e9c21b2be 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
+@@ -12,7 +12,9 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+ 
+ #if defined(DATA_A_QUANT_LEGACY) || defined(DATA_A_MXFP4)
+ #define K_PER_ITER 8
+-#elif defined(DATA_A_QUANT_K)
++#elif defined(DATA_A_QUANT_K) || defined(DATA_A_Q2_0)
++// Q2_0 is 128 quants/block, outside the QUANT_K family, but it likewise
++// consumes 16 quants (one 32-bit word) per mmvq_dot_product call.
+ #define K_PER_ITER 16
+ #elif defined(DATA_A_IQ1_S) || defined(DATA_A_IQ1_M)
+ #define K_PER_ITER 32
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
+index 73cf9c799..8d0c4f882 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
+@@ -29,6 +29,50 @@ FLOAT_TYPEV2 get_dm(uint ib) {
+ }
+ #endif
+ 
++#if defined(DATA_A_Q2_0)
++// Q2_0 (Bonsai ternary): 128 quants per 34-byte block. `ib` is a virtual
++// index in units of 32 quants (QUANT_K_Q8_1), so the real block is ib/4.
++FLOAT_TYPE get_dm(uint ib) {
++    return FLOAT_TYPE(data_a[ib / 4].d);
++}
++
++// GGUF order: byte p of the word holds logical weights 4p..4p+3 at shifts
++// 0,2,4,6. Q2_K's `(w >> s) & 0x03030303` does NOT work here -- it takes
++// the same field from each byte, i.e. weights strided by 4, silently paired
++// with the wrong activations. Extract per byte instead. Validated against a
++// CPU reference in bonsai-edge-serve (kernels/vulkan/gemv_q2.comp,
++// -DGGUF_ORDER): max rel err 4.783e-06, and 2-8% FASTER than a repack.
++int32_t q2_0_codes(uint w, uint p) {
++    const uint c4 = (w >> (8u * p)) & 0xFFu;
++    return int32_t( (c4        & 3u)
++                 | (((c4 >> 2) & 3u) <<  8)
++                 | (((c4 >> 4) & 3u) << 16)
++                 | (((c4 >> 6) & 3u) << 24));
++}
++
++FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
++    // 8 words of 16 quants per block; sub-block (ib_a%4) covers words
++    // 2*(ib_a%4) and +1, and iqs picks the half. 2-byte loads, see the
++    // alignment note on block_q2_0_packed16 in types.glsl.
++    const uint wi = ((ib_a % 4) * 2 + iqs) * 2;
++    const uint w = pack32(u16vec2(data_a_packed16[ib_a / 4].qs[wi    ],
++                                  data_a_packed16[ib_a / 4].qs[wi + 1]));
++
++    int32_t q_sum = 0;
++    q_sum += dotPacked4x8EXT(q2_0_codes(w, 0), cache_b_qs[0]);
++    q_sum += dotPacked4x8EXT(q2_0_codes(w, 1), cache_b_qs[1]);
++    q_sum += dotPacked4x8EXT(q2_0_codes(w, 2), cache_b_qs[2]);
++    q_sum += dotPacked4x8EXT(q2_0_codes(w, 3), cache_b_qs[3]);
++
++    // Codes {0,1,2,3} represent values {-1,0,1,2}, so sum(v*b) =
++    // sum(c*b) - sum(b). cache_b_ds.y is d_b*sum(q) over all 32 quants of
++    // the q8_1 block, and 32/K_PER_ITER = 2 calls cover it, so each call
++    // takes half. Same identity as the CUDA and NEON backends.
++    return FLOAT_TYPE(float(get_dm(ib_a))
++                      * (float(q_sum) * cache_b_ds.x - 0.5 * cache_b_ds.y));
++}
++#endif
++
+ // Each iqs value maps to a 32-bit integer
+ #if defined(DATA_A_Q4_0)
+ // 2-byte loads for Q4_0 blocks (18 bytes)
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl
+index f31d79a61..f044b5350 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl
+@@ -215,11 +215,22 @@ struct block_q2_0
+     uint8_t qs[QUANT_K_Q2_0 / 4];
+ };
+ 
++// A Q2_0 block is 2 + 32 = 34 bytes and therefore only 2-byte aligned.
++// A uint32_t member would force std430 alignment 4, padding the array
++// stride to 36 and misreading every block after the first. Q4_0 (18
++// bytes) uses a packed16 view for exactly this reason.
++struct block_q2_0_packed16
++{
++    float16_t d;
++    uint16_t qs[QUANT_K_Q2_0 / 8];
++};
++
+ #if defined(DATA_A_Q2_0)
+ #define QUANT_K QUANT_K_Q2_0
+ #define QUANT_R QUANT_R_Q2_0
+ #define QUANT_AUXF 1
+ #define A_TYPE block_q2_0
++#define A_TYPE_PACKED16 block_q2_0_packed16
+ #endif
+ 
+ 
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index fc0dd01c4..0c0aa4185 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -707,7 +707,7 @@ void process_shaders() {
+ 
+         // mul mat vec with integer dot product
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-        if (is_legacy_quant(tname) || tname == "mxfp4" || is_k_quant(tname) || tname == "iq1_s" || tname == "iq1_m") {
++        if (is_legacy_quant(tname) || tname == "mxfp4" || is_k_quant(tname) || tname == "iq1_s" || tname == "iq1_m" || tname == "q2_0") {
+             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
+             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
+             string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup_no_shmem", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
+@@ -1147,7 +1147,7 @@ void write_output_files() {
+ 
+     for (const std::string& btype : btypes) {
+     for (const auto& tname : type_names) {
+-        if (btype == "q8_1" && !is_legacy_quant(tname) && tname != "mxfp4" && !is_k_quant(tname) && tname != "iq1_s" && tname != "iq1_m") {
++        if (btype == "q8_1" && !is_legacy_quant(tname) && tname != "mxfp4" && !is_k_quant(tname) && tname != "iq1_s" && tname != "iq1_m" && tname != "q2_0") {
+             continue;
+         }
+         hdr << "extern const void * arr_dmmv_"   << tname << "_" << btype << "_f32_data[3];\n";

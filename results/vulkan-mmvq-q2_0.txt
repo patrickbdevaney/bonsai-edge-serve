@@ -1,0 +1,129 @@
+Vulkan q2_0 integer-dot MMVQ: shipped, gated, measured
+======================================================
+
+The ggml-vulkan integer-dot (MMVQ) path now covers Q2_0. Previously the
+Vulkan backend dequantized Q2_0 to f32 and ran a float dot product; it now
+uses dotPacked4x8AccSatEXT against a q8_1-quantized activation vector.
+
+Fork changes are in patches/0003-vulkan-q2_0-mmvq.patch (ggml-vulkan only).
+
+RESULT (Ternary-Bonsai-27B-Q2_0, Jetson Thor, llama-bench -r 5)
+---------------------------------------------------------------
+  test     MMVQ off        MMVQ on         delta
+  pp512    345.10 +/-0.32  344.94 +/-0.26  none (expected)
+  tg128     11.75 +/-0.07   15.76 +/-0.03  +34.1%
+
+Both columns are the SAME BINARY, toggled with GGML_VK_DISABLE_MMVQ=1.
+That is the point: it removes "did the build actually change?" as an
+explanation, which had already burned us once (see WIKI L7).
+
+pp512 is unchanged BY DESIGN and this is not a disappointment. Prefill
+(n>1) goes through mul_mm / MMQ, a separate gate in vulkan-shaders-gen.cpp
+(~line 594) that this work did not open. Only decode (n=1) routes through
+mul_mat_vec. An unchanged pp512 is therefore the predicted result, and it
+doubles as a control: if pp512 HAD moved, something other than the intended
+kernel changed.
+
+Context: the CUDA backend on the same box measures 16.77 tok/s. Vulkan was
+at 70% of CUDA and is now at 94%.
+
+FIVE GATES, NOT FOUR
+--------------------
+Earlier notes listed four gates. There are five, and the fifth is the one
+that matters most because its failure mode is SILENT BY DESIGN.
+
+  1. toolchain  -- glslc implements GL_EXT_integer_dot_product
+  2. shader-gen -- type in the MMVQ / q8_1 header lists
+                   (vulkan-shaders-gen.cpp ~710, ~1150)
+  3. K_PER_ITER -- type must land in a size class in mul_mat_vecq.comp,
+                   else "#error unimplemented"
+  4. runtime    -- an explicit ggml_vk_create_pipeline call per type
+                   (ggml-vulkan.cpp ~4655)
+  5. runtime    -- the type must ALSO appear in the b_type == GGML_TYPE_Q8_1
+                   allow-list at the top of
+                   ggml_vk_get_dequantize_mul_mat_vec (~6874)
+
+Gate 5 in full, because it is worth internalizing:
+
+    if (b_type == GGML_TYPE_Q8_1) {
+        switch (a_type) {
+            case GGML_TYPE_Q4_0: ... break;
+            default: return nullptr;      // <-- Q2_0 landed here
+        }
+    }
+
+and the caller:
+
+    vk_pipeline dmmv = quantize_y ? ggml_vk_get_..._mul_mat_vec(...Q8_1...) : nullptr;
+    if (dmmv == nullptr) {
+        // Fall back to f16 dequant mul mat
+        dmmv = ggml_vk_get_..._mul_mat_vec(..., src1->type, ...);
+        quantize_y = false;
+    }
+
+nullptr is not an error here, it is a supported answer meaning "use the
+float path". So with gates 1-4 open and gate 5 shut: the shader compiles,
+the SPIR-V is in the .so, the pipeline is created, generation is correct,
+and throughput is unchanged. Every signal available says "integrated, just
+not faster." It was found only by A/B against GGML_VK_DISABLE_MMVQ giving
+11.58 vs 11.61 -- a null result that should have been a 34% win.
+
+Generalization: when a subsystem has a "supported types" list AND a
+graceful fallback, absence from the list is indistinguishable from
+presence-without-benefit. The A/B toggle is what separates them, and it
+must be run before any speedup is claimed OR any "no speedup" is accepted.
+
+THE ALIGNMENT BUG, NOW TESTED RATHER THAN HYPOTHESIZED
+------------------------------------------------------
+A Q2_0 block is 2 (fp16 scale) + 32 (codes) = 34 bytes, so it is only
+2-byte aligned. Declaring the shader-side view with a uint32_t member
+forces std430 alignment 4, padding the array stride to 36 and misreading
+every block after the first. Q4_0 (18 bytes) uses a packed16 view for this
+exact reason.
+
+This was previously recorded as an UNTESTED hypothesis. It is now tested,
+by building both arms and changing nothing else:
+
+  struct view                       test-backend-ops MUL_MAT q2_0
+  block_q2_0_packed32 (uint32 qs)   11 OK, 17 FAIL, NMSE 1.33 - 2.35
+  block_q2_0_packed16 (uint16 qs)   28 OK,  0 FAIL
+
+against a 5.0e-4 threshold. Confirmed, not inferred.
+
+HOW CORRECTNESS WAS GATED (AND TWO GATES THAT DON'T WORK)
+---------------------------------------------------------
+The kernel is numerically gated by test-backend-ops, which compares each
+op against the CPU reference:
+
+  GGML_VK_FORCE_MMVQ=1 test-backend-ops -o MUL_MAT -b Vulkan0
+  -> 28 OK, 0 FAIL   (10 of them n=1, i.e. the decode shape)
+
+GGML_VK_FORCE_MMVQ=1 is REQUIRED. Without it, every shape in the suite is
+k <= 1024, and ggml_vk_should_use_mmvq returns false for k <= 4096 on
+NVIDIA. The tests pass without ever running the kernel under test. This is
+gate 5's lesson repeating in the test harness.
+
+Two gates that were tried and are NOT valid here:
+
+  - Perplexity. llama-perplexity evaluates in n_ctx-sized batches, so it is
+    pure prefill and never touches mul_mat_vec. MMVQ on vs off gave PPL
+    11.6848 both, identical to 4 decimals across all 12 chunks -- which
+    looks like strong agreement and is actually measuring nothing. Same
+    reason pp512 is flat.
+
+  - Greedy text diff alone. Useful but noisy: the integer-dot path changes
+    summation order, so near-ties can flip legitimately. Of 4 prompts, one
+    matched 160/160 tokens exactly, one diverged at character 83 of a
+    ~700-character answer, and two returned a single EOS token from BOTH
+    paths (the known immediate-EOS artifact -- 1 token, sentinel 1e6
+    tok/s -- which the scorer wrongly counted as 0% agreement). Text
+    divergence is a prompt for investigation, not a verdict.
+
+COVERAGE LIMIT, STATED PLAINLY
+------------------------------
+test-backend-ops covers k = 256 and k = 1024 (2 and 8 real blocks). The
+production shapes are k = 5120 and k = 17408. The extraction and addressing
+are per-block and shape-independent, and k=1024 already exercises the
+ib_a/4 and ib_a%4 arithmetic across 8 blocks, so the risk of a shape-
+specific error is low -- but it is not zero and it is not measured. The
+end-to-end evidence at production shapes is the +34% with correct output.
