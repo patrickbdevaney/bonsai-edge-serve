@@ -37,7 +37,7 @@ This repo owns those three gaps.
 | 2 | CUDA engine, DSpark fused into a single launch | not started |
 | 3 | Cross-arch CUDA targets | compile-verified; only sm_110 run |
 | 4 | Vulkan backend | measured via fork; correctness gap found |
-| 5 | CPU backend | ARM NEON measured; AVX-512 needs an x86 host |
+| 5 | CPU backend | ARM NEON measured; x86 AVX2/AVX-VNNI measured (i9-14900HX) |
 | 6 | Cross-backend table on one device | done, below |
 | 6 | Cross-*device* table (Orin, RTX) | blocked: no second device here |
 

@@ -1,7 +1,7 @@
 # Decode kernels
 
-Batch-1 low-bit GEMV for the Bonsai family, across CUDA, Vulkan and ARM
-NEON. This is the core of Phase 2: at batch 1 the model streams every
+Batch-1 low-bit GEMV for the Bonsai family, across CUDA, Vulkan, ARM
+NEON and x86 AVX. This is the core of Phase 2: at batch 1 the model streams every
 weight exactly once per token, so decode speed is this kernel.
 
 ## The design in one page
@@ -46,10 +46,11 @@ backend) is the cheap side of the trade.
 | Backend | Correctness | Performance |
 | :-- | :-- | :-- |
 | CPU (NEON) | **bit-exact vs scalar reference** | **measured, below** |
+| CPU (x86 AVX2/VNNI) | **bit-exact vs scalar reference** | **measured, below** |
 | CUDA | **validated, all 7 rungs** | **measured, below** |
 | Vulkan | **validated, both shaders** | **measured, below** |
 
-All three backends now decode the same shared packed format to the same
+All four backends now decode the same shared packed format to the same
 answer, which is the property the format exists to provide.
 
 ## All three backends, one format, one box
@@ -312,13 +313,94 @@ Note this also reframes the "one format, three backends" claim honestly:
 it holds for the dot-product-shaped kernels (CUDA, Vulkan, CPU 2-bit),
 and the CPU 1-bit path is where it may have to bend.
 
+## Measured: CPU (x86 AVX2 / AVX-VNNI), i9-14900HX
+
+The x86 leg of the cross-device story (GAP 3). Host: Intel i9-14900HX
+(Raptor Lake, 8 P + 16 E cores), gcc 13, laptop DDR5. This part has
+**no AVX-512** -- it is fused off on consumer Raptor Lake -- so the
+fork's AVX512-VNNI repack kernels are not runnable here; what is
+measured is the VEX path, which also happens to be the wider target
+(AVX2 reaches every x86 since Haswell, AVX-VNNI reaches Alder Lake+).
+
+Same shared packed format, same activation-side permutation trade as
+NEON (a 32-byte vector spans eight weight words). The dot step is where
+x86 is actually a *better* fit than ARM: `VPDPBUSD` is u8 x s8 -> s32,
+which is the biased encoding verbatim -- raw unsigned codes against
+signed int8 activations, correction once per block. The AVX2-only
+fallback spells the same contraction as `VPMADDUBSW` + `VPMADDWD`
+(3 uops instead of 1), exact because codes <= 3 keep the s16
+intermediate at 762 max.
+
+All variants validate **bit-exact** (max rel err 0.000e+00) against the
+same scalar reference the other backends use; `-ffp-contract=off` keeps
+the per-block float accumulate in the reference's rounding order. Full
+log in `../results/gemv-avx-x86.txt`.
+
+Streaming shape N=131072 K=8192 (256 MiB Q2_0, 7x the 36 MiB L3),
+single thread, GB/s of weight bytes:
+
+| Kernel | Q2_0 | Q1_0 |
+| :-- | --: | --: |
+| scalar per-element extract | 0.17 | 0.02 |
+| AVX2 maddubs, best R | 6.65 | 3.28 |
+| **AVX-VNNI vpdpbusd, best R** | **7.92** | **4.44** |
+
+**~46x for ternary, ~440x for 1-bit** over per-element extract, and
+VNNI is worth +19-35% over the maddubs spelling of the same math. As on
+ARM, row blocking is nearly flat single-threaded -- unpack-ALU bound,
+not latency bound.
+
+The BLAS control row: the same matrix dequantized to fp32 through
+OpenBLAS `cblas_sgemv` takes **231 ms single-threaded against 34 ms**
+for the Q2_0 VNNI kernel at the same shape -- 6.8x -- and still 142 ms
+with 24 threads, 4.4x slower than our *single-threaded* kernel. BLAS's
+AVX kernels are fine; streaming 16x the bytes is what loses. That
+measurement, not an assertion, is why the low-bit format exists.
+
+### The open item: multithread scaling is flat, and the DRAM says it shouldn't be
+
+Threaded (VNNI R=4), the streaming shape moves 8.4 -> 9.3 GB/s from 1
+to 32 threads -- essentially nothing. But the fp32 sgemv rows measure
+the same DRAM sustaining **~30 GB/s** with threads (18.6 single), so
+the ceiling is real and the low-bit kernel is at ~a third of it. With
+scales (+1/8 of weight bytes) counted, one thread of our kernel moves
+~9 GB/s of true traffic while one thread of sgemv moves 18.6 -- so the
+per-thread gap is about 2x, and adding threads closes none of it. The
+suspects, in order: hybrid-scheduling placement (the same kernel runs
+2x faster inside a 1-thread OpenMP region than bare on shape 1, so
+thread placement demonstrably moves this kernel 2x), thermal steady
+state on a laptop chassis late in a long run, and the per-block
+`hsum256` reduction serializing the chains. Diagnosis needs isolated
+runs with pinning (`OMP_PLACES=cores`, P-cores only), and until that is
+done **9.3 GB/s threaded is what this repo claims** -- a ~3x gap to the
+measured DRAM ceiling is the honest open item, not a rounding error.
+
+### What that means end to end
+
+Projecting weights-only bandwidth onto the real model (ternary 7.17 GB,
+1-bit 3.80 GB of weights per token), at the measured 9.3 / 5.1 GB/s:
+**~1.3 tok/s ternary, ~1.3 tok/s 1-bit** on this laptop part today, with
+the measured 30 GB/s DRAM ceiling putting the reachable roofline near
+**4.2 / 7.9 tok/s** if the scaling item above is closed. Q1_0 shows the
+same shape as ARM: same weights/instruction as Q2_0, half the bytes, so
+it gains nothing from being smaller -- the T-MAC-style LUT argument
+carries over to x86 (`VPSHUFB` in place of `vqtbl1q`), with the same
+row-interleaving cost, and the same recommendation: prototype standalone
+before bending the shared format.
+
 ## Building
 
 ```bash
-# CPU
+# CPU, ARM
 cc -O3 -march=armv8.2-a+dotprod -fopenmp \
    -o cpu-neon-arm/gemv_neon_bench cpu-neon-arm/gemv_neon_bench.c -lm
 ./cpu-neon-arm/gemv_neon_bench 4096 32768 3
+
+# CPU, x86 (see cpu-avx-x86/Makefile; `make blas` adds the fp32 control
+# row -- point BLAS_LIB/BLAS_SO at any CBLAS, incl. a conda OpenBLAS)
+cc -O3 -mavx2 -mavxvnni -mfma -ffp-contract=off -fopenmp \
+   -o cpu-avx-x86/gemv_avx_bench cpu-avx-x86/gemv_avx_bench.c -lm
+./cpu-avx-x86/gemv_avx_bench 8192 131072 3
 
 # CUDA (needs a working GPU to run)
 nvcc -O3 -arch=sm_110a --extended-lambda -o cuda/gemv_bench cuda/gemv_bench.cu
