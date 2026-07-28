@@ -1,0 +1,121 @@
+Vulkan q1_0 integer-dot MMVQ: +23.7%, most of it from the SECOND fix
+====================================================================
+
+Q1_0 joins the same MMVQ path as Q2_0, through the same five gates. The
+first cut landed at +6.0%, far below Q2_0's +34.1%. Chasing that gap with a
+probe -- rather than an argument -- found the real bottleneck and took it
+to +23.7%. The chase is the useful part of this file.
+
+RESULT (Bonsai-27B-Q1_0, 3.53 GiB, llama-bench -r 5)
+-----------------------------------------------------
+  test     MMVQ off        MMVQ on         delta
+  pp512    327.30 +/-0.10  325.63 +/-3.40  none (expected, MMQ not opened)
+  tg128     15.39 +/-0.01   19.03 +/-0.02  +23.7%  (see the ALU section)
+
+For comparison, Q2_0 on the same box: 11.75 -> 15.76, +34.1%.
+
+Numerically gated: GGML_VK_FORCE_MMVQ=1 test-backend-ops -o MUL_MAT gives
+28 OK / 0 FAIL for q1_0 (and still 28/0 for q2_0). End-to-end the 1-bit
+model emits a correct binary search from `def binary_search(arr, target):`.
+
+Implementation notes: Q1_0's bit order is LSB-first and CONSECUTIVE --
+weight j at byte j/8, bit j%8 (dequantize_row_q1_0, ggml-quants.c) -- so it
+has none of Q2_0's stride trap. The nibble still has to be spread across
+four bytes to pair with cache_b_qs[p]. Block is 2 + 16 = 18 bytes, so
+packed16 is again mandatory (same reason as Q4_0). Bits {0,1} mean {-1,+1},
+i.e. v = 2c-1, so the correction is 2*q_sum*dsb.x - 0.5*dsb.y -- the factor
+of 2 is the only arithmetic difference from Q2_0.
+
+WHY +6% AND NOT +34% -- ANSWERED BY EXPERIMENT, THEN FIXED
+-----------------------------------------------------------
+In milliseconds per token, where these compose additively:
+
+  Q2_0   85.11 -> 63.45   saved 21.65 ms
+  Q1_0   64.98 -> 61.31   saved  3.67 ms
+
+The 1-bit model has 53% of the weight bytes, so if the saving tracked
+weight bytes it would have been ~11 ms. It was 3.7.
+
+THE ALU PROBE. Rather than argue, the extraction was replaced by
+`int32_t(w + p)` -- one op instead of ~8, numerically wrong on purpose,
+with the load and all four dotPacked4x8EXT retained. That isolates the cost
+of extraction alone:
+
+  format   MMVQ off   MMVQ on   ALU probe   extraction costs
+  Q2_0      85.11 ms   63.45 ms   56.34 ms    7.11 ms/token
+  Q1_0      64.98 ms   61.31 ms   51.26 ms   10.05 ms/token
+
+**Q1_0 spent MORE absolute time on extraction than Q2_0, despite being half
+the model.** That is the whole answer, and in hindsight it is obvious: both
+models have the same 26.9B weight COUNT, and mmvq_dot_product is called
+once per 16 weights regardless of format. So extraction cost is per-weight
+and roughly equal between them, while the memory traffic it is hidden
+behind is halved. Q1_0's was in fact 41% higher because spreading four
+1-bit fields across four bytes takes more instructions than masking four
+2-bit fields.
+
+THE FIX: SPREAD BITS WITH ONE MULTIPLY. To place bit i at bit 8i, scale it
+by 2^(7i); multiplying by 1 + 2^7 + 2^14 + 2^21 = 0x00204081 does all four
+at once and a 0x01010101 mask drops the cross terms:
+
+    const uint n = (h >> (4u * p)) & 0xFu;
+    return int32_t((n * 0x00204081u) & 0x01010101u);
+
+Verified exhaustively against the shift/or form over all 65536 h x 4 p
+values: 0 mismatches. Cheap to prove, so it was proved rather than trusted.
+
+The same trick does NOT work for Q2_0, and this was checked before
+assuming: its fields are 2 bits wide, so partial sums carry between them
+and 96 of the 256 possible byte values disagree. Q2_0 keeps the shift form.
+
+  Bonsai-27B-Q1_0 tg128:
+    MMVQ off                  15.39 tok/s
+    MMVQ on, shift extract    16.31 tok/s   +6.0%
+    MMVQ on, multiply extract 19.03 tok/s   +23.7%   <- shipped
+    ALU probe (free extract)  19.51 tok/s   upper bound
+
+19.03 is 97.5% of the probe's ceiling, so extraction is no longer worth
+attacking. Q2_0 measured 15.74 across the same change, unchanged as
+expected -- a control confirming nothing else moved.
+
+Worth noting: the Vulkan 1-bit build now reaches the same 19.03 tok/s that
+the CUDA backend measures natively (W1). The exact tie is a coincidence of
+rounding, but Vulkan having caught up with CUDA on this model is not.
+
+A NOTE ON THE FIXED PER-TOKEN COST
+-----------------------------------
+Fitting t = F + GiB*C to the two BASELINE points gives F = 42.3 ms/token
+and C = 6.43 ms/GiB (implied 167 GB/s, plausible against the 212-220 GB/s
+we measure achievable). That would put 50-65% of decode in work that weight
+kernels cannot touch.
+
+**But the same fit on the post-MMVQ points implies 1571 GB/s, and on the
+CUDA baseline 475 GB/s, against a 273 GB/s DRAM spec -- impossible.** So
+the linear model is wrong and cannot carry an explanation. It is recorded
+because its failure is informative: whatever the non-streaming cost is, it
+does not stay constant across backends or across kernel changes. The ALU
+probe above is what actually settled the question, and it settled it
+without needing this model at all.
+
+Open question: what the ~40 ms of non-weight-streaming per-token cost
+actually consists of (GDN recurrent state, attention, norms, sampling,
+per-op launch overhead). That is now the largest single target in decode,
+larger than anything left in the matmul kernels.
+
+CORRECTION TO W9
+----------------
+W9 recorded "Vulkan integer-dot path enabled: Q1_0 +40%, Q2_0 +2%" from our
+standalone kernels. End to end through ggml the ranking is nearly INVERTED:
+Q2_0 +34.1%, Q1_0 +6.0% as first written (+23.7% after the multiply fix).
+
+Both measurements are correct and they are not comparable, because the
+baselines differ. Our standalone number compared OUR scalar fallback to OUR
+integer-dot kernel. The ggml number compares GGML's f32 dequant-MMV kernel
+to the integer-dot path. A microbenchmark speedup is a statement about the
+thing you replaced, and ggml's dequant-MMV is a much stronger baseline than
+our scalar loop -- most of all for Q1_0, where unpacking bits to floats is
+cheap.
+
+Generalizable: a kernel-vs-kernel ratio does not transfer to a different
+baseline, and does not survive Amdahl. Quote absolute throughput on both
+sides, and state what the baseline was.

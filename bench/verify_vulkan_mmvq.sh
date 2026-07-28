@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert that every edit of the Vulkan q2_0 MMVQ integration is PRESENT in
+# Assert that every edit of the Vulkan q1_0 + q2_0 MMVQ integration is PRESENT
 # the fork before any measurement is believed.
 #
 # This exists because of WIKI L7: a "fix" was applied by a script whose
@@ -98,6 +98,29 @@ else
     echo "  ABSENT      runtime: Q2_0 missing from the b_type==Q8_1 allow-list"
     echo "      ggml_vk_get_dequantize_mul_mat_vec returns nullptr -> SILENT"
     echo "      fallback to the f32 dequant path. tok/s will look unchanged."
+    fail=1
+fi
+
+# --- Q1_0: same five gates, same reasoning ---
+check "types: block_q1_0_packed16 declared" 1 \
+      "$SH/types.glsl" "struct block_q1_0_packed16"
+check "types: A_TYPE_PACKED16 defined for q1_0" 1 \
+      "$SH/types.glsl" "define A_TYPE_PACKED16 block_q1_0_packed16"
+check "funcs: q1_0_codes extraction" 1 \
+      "$SH/mul_mat_vecq_funcs.glsl" "q1_0_codes"
+check "comp: q1_0 joins the K_PER_ITER 16 class" 1 \
+      "$SH/mul_mat_vecq.comp" "defined(DATA_A_Q1_0)"
+check "gen: q1_0 in the MMVQ generate list" 1 \
+      "$SH/vulkan-shaders-gen.cpp" 'tname == "q1_0"'
+check "gen: q1_0 in the q8_1 header-emit list" 1 \
+      "$SH/vulkan-shaders-gen.cpp" 'tname != "q1_0"'
+check "runtime: ggml_vk_create_pipeline for Q1_0" 1 \
+      "$VK/ggml-vulkan.cpp" "pipeline_dequant_mul_mat_vec_q8_1_f32\[w\]\[GGML_TYPE_Q1_0\]"
+if awk '/^static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec\(/,/^    switch \(a_type\)/' \
+       "$VK/ggml-vulkan.cpp" | grep -q "case GGML_TYPE_Q1_0:"; then
+    echo "  ok    (1)  runtime: Q1_0 in the b_type==Q8_1 allow-list"
+else
+    echo "  ABSENT      runtime: Q1_0 missing from the b_type==Q8_1 allow-list"
     fail=1
 fi
 

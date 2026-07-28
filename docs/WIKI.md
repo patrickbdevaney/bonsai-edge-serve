@@ -31,6 +31,8 @@ hardware backs it. Everything else lives under Open Questions.
 | W12 | Shape-adaptive kernel selection rule | v7 <32MB (L2), v5 >32MB (streaming) | `3f8c4e2` |
 | W13 | Four candidate optimizations tested and rejected on evidence | uint4 loads, row-blocking (streaming), split-K, `n_rs_seq=0` | various |
 | W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `a47598b` |
+| W15 | **Vulkan q1_0 MMVQ + multiply bit-spread** | tg128 **15.39 -> 19.03 tok/s (+23.7%)**; matches CUDA's 19.03 on this model | `pending` |
+| W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `pending` |
 
 ---
 
@@ -134,6 +136,54 @@ physically present in the tree, and it earned its keep immediately -- on
 the restore after the experiment above, `git checkout` plus a patch that
 failed to apply left the tree half-reverted, and the gate caught it before
 a single number was taken.
+
+### K7. When a win underdelivers, probe the cost -- do not theorise it
+
+Q1_0's MMVQ landed at +6.0% against Q2_0's +34.1%. The tempting move was to
+explain it: smaller model, less bandwidth to save, Amdahl, done. A two-point
+`t = F + GiB*C` fit even produced a tidy story (F = 42.3 ms/token of
+non-streaming cost, 50-65% of decode). **That fit is wrong** -- applied to
+the post-fix points it implies 1571 GB/s and to CUDA 475 GB/s, against a
+273 GB/s DRAM spec. A plausible model with no residual to check is not
+evidence; a two-point fit is exactly determined and can never disagree with
+its own inputs.
+
+What settled it was a five-minute experiment: replace the extraction with
+`int32_t(w + p)` -- one op, numerically wrong on purpose -- while keeping
+the load and all four `dotPacked4x8EXT`. That isolates extraction cost:
+
+| format | MMVQ off | MMVQ on | ALU probe | extraction costs |
+| :-- | --: | --: | --: | --: |
+| Q2_0 | 85.11 ms | 63.45 ms | 56.34 ms | 7.11 ms/token |
+| Q1_0 | 64.98 ms | 61.31 ms | 51.26 ms | **10.05 ms/token** |
+
+Q1_0 spent *more* absolute time on extraction than Q2_0 while being half
+the model. Obvious afterwards: both have the same 26.9B weight COUNT and
+`mmvq_dot_product` runs once per 16 weights regardless of format, so
+extraction is a per-WEIGHT cost while the traffic hiding it is per-BYTE.
+At 1 bit/weight there is half the traffic to hide behind and slightly more
+work to hide.
+
+The fix follows directly -- spread 4 bits across 4 bytes with one multiply
+(`n * 0x00204081 & 0x01010101`; bit i needs scaling by 2^(7i)) instead of
+eight shifts and masks. Q1_0 went 16.31 -> 19.03 tok/s, which is 97.5% of
+the probe's 19.51 ceiling, so extraction is now closed as a target.
+
+Two things worth keeping:
+
+- **A deliberately-wrong kernel is a legitimate measuring instrument.**
+  It costs one build and answers "how much does this step cost?" exactly,
+  where reasoning from bytes and instruction counts had produced a
+  confident wrong answer.
+- **The probe also supplies the ceiling.** Knowing 19.51 was the maximum
+  meant 19.03 could be declared finished rather than optimised further on
+  spec.
+
+Corollary that saved a bug: the same multiply trick does NOT work for Q2_0
+-- 2-bit fields carry into each other, and 96 of 256 byte values disagree.
+That was checked exhaustively *before* assuming symmetry between the two
+formats. The Q1_0 form was likewise verified over all 65536 x 4 inputs.
+Both checks cost seconds in Python and one of them found a real defect.
 
 ### L8. A gate whose failure mode is silence BY DESIGN
 
