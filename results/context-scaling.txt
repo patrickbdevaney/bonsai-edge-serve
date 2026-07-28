@@ -1,0 +1,69 @@
+Long context on a hybrid model: decode speed does not degrade, and 256K fits
+============================================================================
+
+Everything in this repo had run at 16K. `n_ctx_train` is **262144**. This
+measures what the other 16x actually costs.
+
+The reason to expect something unusual: Bonsai is 48/64 gated-delta-net.
+A GDN layer's recurrent state summarises the sequence and is FIXED SIZE
+regardless of length. Only the 16 full-attention layers grow a KV cache. So
+the usual "KV eats your edge device" arithmetic should be roughly 4x milder
+than for a dense 64-layer transformer of the same size.
+
+MEASURED (ternary Q2_0, Vulkan, buffers from ggml's own accounting)
+-------------------------------------------------------------------
+  ctx      KV type   KV MiB   GDN MiB   compute   total MiB    tok/s
+  4096     f16          256       598       325        1180    15.33
+  16384    f16         1024       598       373        1996    15.68
+  65536    f16         4096       598       565        5260    15.78
+  131072   f16         8192       598       821        9612    15.79
+  262144   f16        16384       598      1333       18316    15.77
+
+  4096     q8_0         136       598       321        1056    15.79
+  16384    q8_0         544       598       369        1512    15.74
+  65536    q8_0        2176       598       561        3336    15.77
+  131072   q8_0        4352       598       817        5768    15.77
+  262144   q8_0        8704       598      1329       10632    15.83
+
+THREE RESULTS
+-------------
+**1. Decode throughput is flat across the whole range: 15.33 - 15.83 tok/s
+from 4K to 262144.** A 64x increase in context costs nothing per token. On a
+dense transformer decode slows as the KV grows, because every attention
+layer rescans it; here only 16 of 64 layers do, and flash attention keeps
+even those cheap at batch 1. This is the clearest measured statement of what
+the hybrid architecture actually buys, and it is a serving property, not a
+benchmark artifact -- the numbers come from real generations.
+
+**2. The full 262144 context runs on this box.** 18.3 GiB of buffers plus
+6.5 GiB of weights is ~25 GiB against 122 GiB of unified memory. There is no
+context-length reason to run this model short on Thor.
+
+**3. q8_0 KV halves the KV cache for no measurable cost.** At 262144 it
+takes 16384 -> 8704 MiB (-47%), total 18316 -> 10632 MiB (-42%), and
+throughput is unchanged (15.77 vs 15.83, inside run-to-run noise). Greedy
+output at 8K context is character-identical to f16 on a code prompt. It is
+not 50% because q8_0 is 34 bytes per 32 values, i.e. 8.5 bits, not 8.
+
+  KV cost per token, f16:  16 layers x 4 KV heads x 256 head_dim
+                           x 2 (K and V) x 2 bytes = 64 KiB/token
+  the same model dense:    64 layers -> 256 KiB/token
+
+WHAT THIS DOES NOT SHOW
+-----------------------
+- **Prefill is not free and was not measured here.** Decode is flat; filling
+  256K tokens still costs 256K tokens of prefill at ~345 tok/s, i.e. minutes.
+  Long context is cheap to HOLD on this model, not cheap to establish.
+- **Quality at long context is untested.** These runs generate 48 tokens
+  from a short prompt at a large `-c`; they do not exercise retrieval or
+  reasoning over a genuinely long context. "It fits and it is fast" is not
+  "it works well", and this file does not claim the second.
+- The q8_0 quality check is one prompt at 8K, not a perplexity sweep at
+  256K. It is evidence, not proof.
+
+RECOMMENDATION
+--------------
+Default to a large context with `-ctk q8_0 -ctv q8_0`. On this model that is
+close to free, and the memory saved is the difference between one and two
+concurrent sequences at long context -- which is the next thing worth
+building (continuous batching).

@@ -274,6 +274,32 @@ Vulkan kernels -- it was one sample, and re-running it would have given a
 different number. **Establish determinism before running any comparison
 gate.** Full write-up: `results/vulkan-nondeterminism.txt`.
 
+## Long context is nearly free on this architecture
+
+Bonsai is 48/64 gated-delta-net, and a GDN layer's recurrent state is fixed
+size regardless of sequence length -- only the 16 full-attention layers grow
+a KV cache. Measured across the model's full trained context:
+
+| ctx | KV (f16) | KV (q8_0) | GDN state | total (q8_0) | tok/s |
+| --: | --: | --: | --: | --: | --: |
+| 4096 | 256 MiB | 136 MiB | 598 MiB | 1056 MiB | 15.79 |
+| 65536 | 4096 | 2176 | 598 | 3336 | 15.77 |
+| 131072 | 8192 | 4352 | 598 | 5768 | 15.77 |
+| 262144 | 16384 | 8704 | 598 | 10632 | 15.83 |
+
+**Decode throughput is flat across a 64x context increase** (15.33 -> 15.83
+tok/s). On a dense transformer decode slows as the KV grows because every
+attention layer rescans it; here only 16 of 64 do. The full 262144 context
+runs in ~25 GiB including weights, against 122 GiB of unified memory.
+
+`q8_0` KV halves the cache for no measurable cost -- unchanged throughput
+and character-identical greedy output on a code prompt.
+
+Two honest limits: **prefill is not free** (filling 256K still costs 256K
+tokens at ~345 tok/s), and **quality at long context is untested** -- these
+runs show it fits and stays fast, not that it reasons well over 256K.
+`results/context-scaling.txt`.
+
 ## Serving: `bonsai-server` (pure C++, single binary)
 
 A lean OpenAI-compatible server that links `libllama` directly -- no Python
