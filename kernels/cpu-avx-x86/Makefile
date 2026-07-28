@@ -26,7 +26,11 @@ blas: gemv_avx_bench.c ../common/bonsai_gemv.h
 	$(CC) $(CFLAGS) -DUSE_BLAS -o gemv_avx_bench gemv_avx_bench.c \
 	    $(BLAS_LIB) $(BLAS_SO) -lm
 
-clean:
-	rm -f gemv_avx_bench
+test: test_shapes.c gemv_avx_bench.c ../common/bonsai_gemv.h
+	$(CC) $(CFLAGS) -o test_shapes test_shapes.c -lm
+	./test_shapes
 
-.PHONY: blas clean
+clean:
+	rm -f gemv_avx_bench test_shapes
+
+.PHONY: blas test clean

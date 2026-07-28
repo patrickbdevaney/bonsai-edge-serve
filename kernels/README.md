@@ -331,9 +331,18 @@ fallback spells the same contraction as `VPMADDUBSW` + `VPMADDWD`
 (3 uops instead of 1), exact because codes <= 3 keep the s16
 intermediate at 762 max.
 
-All variants validate **bit-exact** (max rel err 0.000e+00) against the
-same scalar reference the other backends use; `-ffp-contract=off` keeps
-the per-block float accumulate in the reference's rounding order. Full
+All v1 variants validate **bit-exact** (max rel err 0.000e+00) against
+the same scalar reference the other backends use; `-ffp-contract=off`
+keeps the per-block float accumulate in the reference's rounding order.
+Beyond the bench's friendly shapes, `make test` sweeps 108 (K, N)
+combinations -- every tail residue, N=1, and the model-shaped dims --
+through every shipped kernel and both MT wrappers: 1176 combinations
+pass. The sweep already paid for itself twice: it caught the static MT
+wrapper dropping N%8 rows (the bench's round shapes could never see
+it), and it reproduced the ARM sweep's error-metric lesson (L16)
+verbatim -- 7 "failures" that were near-cancelled rows under an
+elementwise-relative gate, all within 5e-05 of a double-precision
+oracle, now judged by error over max|ref| like the ARM tests. Full
 log in `../results/gemv-avx-x86.txt`.
 
 Streaming shape N=131072 K=8192 (256 MiB Q2_0, 7x the 36 MiB L3),

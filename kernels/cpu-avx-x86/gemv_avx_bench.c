@@ -199,14 +199,27 @@ static inline float hsum256_ps(__m256 v) {
         for (int rr = 0; rr < (R); ++rr) out[r0+rr] = accf[rr] * da;          \
     }
 
+// R > 1 kernels finish the N % R tail rows through the R=1 variant, so
+// any N is legal. (An R=1 kernel has no tail; its DEF omits the call.)
+#define DEF_Q2_R1(SUFFIX, DOT)                                                \
+static void gemv_q2_##SUFFIX##_r1(const uint8_t *W, const float *S,           \
+                         const int8_t *P, const int32_t *ASUM, float da,      \
+                         float *out, int N, int K) { Q2_ROWS_BODY(1, DOT) }
 #define DEF_Q2(R, SUFFIX, DOT)                                                \
 static void gemv_q2_##SUFFIX##_r##R(const uint8_t *W, const float *S,         \
                          const int8_t *P, const int32_t *ASUM, float da,      \
-                         float *out, int N, int K) { Q2_ROWS_BODY(R, DOT) }
-DEF_Q2(1, avx2, DOT_AVX2) DEF_Q2(2, avx2, DOT_AVX2)
+                         float *out, int N, int K) {                          \
+    { Q2_ROWS_BODY(R, DOT) }                                                  \
+    const int tail = N % (R);                                                 \
+    if (tail)                                                                 \
+        gemv_q2_##SUFFIX##_r1(W + (size_t)(N-tail)*(K/4),                     \
+                              S + (size_t)(N-tail)*(K/BONSAI_QK),             \
+                              P, ASUM, da, out + (N-tail), tail, K);          \
+}
+DEF_Q2_R1(avx2, DOT_AVX2) DEF_Q2(2, avx2, DOT_AVX2)
 DEF_Q2(4, avx2, DOT_AVX2) DEF_Q2(8, avx2, DOT_AVX2)
 #ifdef BONSAI_HAVE_VNNI
-DEF_Q2(1, vnni, DOT_VNNI) DEF_Q2(2, vnni, DOT_VNNI)
+DEF_Q2_R1(vnni, DOT_VNNI) DEF_Q2(2, vnni, DOT_VNNI)
 DEF_Q2(4, vnni, DOT_VNNI) DEF_Q2(8, vnni, DOT_VNNI)
 #endif
 
@@ -260,14 +273,25 @@ DEF_Q2(4, vnni, DOT_VNNI) DEF_Q2(8, vnni, DOT_VNNI)
         for (int rr = 0; rr < (R); ++rr) out[r0+rr] = accf[rr] * da;          \
     }
 
+#define DEF_Q1_R1(SUFFIX, DOT)                                                \
+static void gemv_q1_##SUFFIX##_r1(const uint8_t *W, const float *S,           \
+                         const int8_t *P, const int32_t *ASUM, float da,      \
+                         float *out, int N, int K) { Q1_ROWS_BODY(1, DOT) }
 #define DEF_Q1(R, SUFFIX, DOT)                                                \
 static void gemv_q1_##SUFFIX##_r##R(const uint8_t *W, const float *S,         \
                          const int8_t *P, const int32_t *ASUM, float da,      \
-                         float *out, int N, int K) { Q1_ROWS_BODY(R, DOT) }
-DEF_Q1(1, avx2, DOT_AVX2) DEF_Q1(2, avx2, DOT_AVX2)
+                         float *out, int N, int K) {                          \
+    { Q1_ROWS_BODY(R, DOT) }                                                  \
+    const int tail = N % (R);                                                 \
+    if (tail)                                                                 \
+        gemv_q1_##SUFFIX##_r1(W + (size_t)(N-tail)*(K/8),                     \
+                              S + (size_t)(N-tail)*(K/BONSAI_QK),             \
+                              P, ASUM, da, out + (N-tail), tail, K);          \
+}
+DEF_Q1_R1(avx2, DOT_AVX2) DEF_Q1(2, avx2, DOT_AVX2)
 DEF_Q1(4, avx2, DOT_AVX2) DEF_Q1(8, avx2, DOT_AVX2)
 #ifdef BONSAI_HAVE_VNNI
-DEF_Q1(1, vnni, DOT_VNNI) DEF_Q1(2, vnni, DOT_VNNI)
+DEF_Q1_R1(vnni, DOT_VNNI) DEF_Q1(2, vnni, DOT_VNNI)
 DEF_Q1(4, vnni, DOT_VNNI) DEF_Q1(8, vnni, DOT_VNNI)
 #endif
 
@@ -362,16 +386,38 @@ DEF_Q1(4, vnni, DOT_VNNI) DEF_Q1(8, vnni, DOT_VNNI)
             out[r0+rr] = (2.f * hsum256_ps(accv[rr]) - acs[rr]) * da;         \
     }
 
+#define DEF_Q2VS_R1(SUF, PF)                                                  \
+static void gemv_q2_vs##SUF##_r1(const uint8_t *W, const float *S,            \
+                         const int8_t *P, const int32_t *ASUM, float da,      \
+                         float *out, int N, int K) { Q2_VS_BODY(1, PF) }
 #define DEF_Q2VS(R, SUF, PF)                                                  \
 static void gemv_q2_vs##SUF##_r##R(const uint8_t *W, const float *S,          \
                          const int8_t *P, const int32_t *ASUM, float da,      \
-                         float *out, int N, int K) { Q2_VS_BODY(R, PF) }
+                         float *out, int N, int K) {                          \
+    { Q2_VS_BODY(R, PF) }                                                     \
+    const int tail = N % (R);                                                 \
+    if (tail)                                                                 \
+        gemv_q2_vs##SUF##_r1(W + (size_t)(N-tail)*(K/4),                      \
+                             S + (size_t)(N-tail)*(K/BONSAI_QK),              \
+                             P, ASUM, da, out + (N-tail), tail, K);           \
+}
+#define DEF_Q1VS_R1(SUF, PF)                                                  \
+static void gemv_q1_vs##SUF##_r1(const uint8_t *W, const float *S,            \
+                         const int8_t *P, const int32_t *ASUM, float da,      \
+                         float *out, int N, int K) { Q1_VS_BODY(1, PF) }
 #define DEF_Q1VS(R, SUF, PF)                                                  \
 static void gemv_q1_vs##SUF##_r##R(const uint8_t *W, const float *S,          \
                          const int8_t *P, const int32_t *ASUM, float da,      \
-                         float *out, int N, int K) { Q1_VS_BODY(R, PF) }
-DEF_Q2VS(1, , 0) DEF_Q2VS(4, , 0) DEF_Q2VS(1, pf, 1024) DEF_Q2VS(4, pf, 1024)
-DEF_Q1VS(1, , 0) DEF_Q1VS(4, , 0) DEF_Q1VS(4, pf, 1024)
+                         float *out, int N, int K) {                          \
+    { Q1_VS_BODY(R, PF) }                                                     \
+    const int tail = N % (R);                                                 \
+    if (tail)                                                                 \
+        gemv_q1_vs##SUF##_r1(W + (size_t)(N-tail)*(K/8),                      \
+                             S + (size_t)(N-tail)*(K/BONSAI_QK),              \
+                             P, ASUM, da, out + (N-tail), tail, K);           \
+}
+DEF_Q2VS_R1(, 0) DEF_Q2VS(4, , 0) DEF_Q2VS_R1(pf, 1024) DEF_Q2VS(4, pf, 1024)
+DEF_Q1VS_R1(, 0) DEF_Q1VS(4, , 0) DEF_Q1VS_R1(pf, 1024) DEF_Q1VS(4, pf, 1024)
 #endif // BONSAI_HAVE_VNNI
 
 // ------------------------------------------------- threaded wrappers
@@ -392,6 +438,10 @@ DEF_Q1VS(1, , 0) DEF_Q1VS(4, , 0) DEF_Q1VS(4, pf, 1024)
 #define MT_KERN_Q1 gemv_q1_avx2_r4
 #endif
 
+// per must be ceil(N/nth) rounded UP to a multiple of 8: the earlier
+// ((N/8)+nth-1)/nth*8 floors N/8 first and can leave up to N%8 rows --
+// or, when N/8 < nth, whole thread-counts' worth -- assigned to no
+// thread. The shape sweep caught it (err 1.0 at N=100, t=4).
 static void gemv_q2_mt(const uint8_t *W, const float *S, const int8_t *P,
                        const int32_t *ASUM, float da, float *out,
                        int N, int K, int nth) {
@@ -399,7 +449,7 @@ static void gemv_q2_mt(const uint8_t *W, const float *S, const int8_t *P,
 #pragma omp parallel for num_threads(nth) schedule(static)
 #endif
     for (int t = 0; t < nth; ++t) {
-        const int per = ((N / 8) + nth - 1) / nth * 8;
+        const int per = (((N + nth - 1) / nth) + 7) / 8 * 8;
         const int lo = t * per;
         int hi = lo + per; if (hi > N) hi = N;
         if (lo < hi)
@@ -415,7 +465,7 @@ static void gemv_q1_mt(const uint8_t *W, const float *S, const int8_t *P,
 #pragma omp parallel for num_threads(nth) schedule(static)
 #endif
     for (int t = 0; t < nth; ++t) {
-        const int per = ((N / 8) + nth - 1) / nth * 8;
+        const int per = (((N + nth - 1) / nth) + 7) / 8 * 8;
         const int lo = t * per;
         int hi = lo + per; if (hi > N) hi = N;
         if (lo < hi)
@@ -487,6 +537,13 @@ static void dequant_q2_fp32(const uint8_t *W, const float *S, float *Wf,
 #endif
 
 // ---------------------------------------------------------------------
+// C11 aligned_alloc requires size to be a multiple of the alignment;
+// round up so small shapes (e.g. K=1024 -> 32-byte ASUM) are not UB.
+#define XALLOC(sz) aligned_alloc(64, ((size_t)(sz) + 63) & ~(size_t)63)
+
+// test_shapes.c reuses every kernel above by defining BONSAI_NO_MAIN
+// and #including this file.
+#ifndef BONSAI_NO_MAIN
 
 int main(int argc, char **argv) {
     const int K = (argc > 1) ? atoi(argv[1]) : 4096;
@@ -510,10 +567,6 @@ int main(int argc, char **argv) {
     printf("dot step: VPMADDUBSW only (no VNNI at compile time)\n\n");
 #endif
 
-    // C11 aligned_alloc requires size to be a multiple of the
-    // alignment; round up so small shapes (e.g. K=1024 -> 32-byte ASUM)
-    // are not UB.
-    #define XALLOC(sz) aligned_alloc(64, ((size_t)(sz) + 63) & ~(size_t)63)
     uint8_t *q2  = XALLOC((size_t)N*K/4);
     uint8_t *q2r = XALLOC((size_t)N*K/4);
     uint8_t *q1  = XALLOC((size_t)N*K/8);
@@ -716,3 +769,4 @@ int main(int argc, char **argv) {
            "fp32 rows stream 16x Q2_0's bytes, so compare ms per GEMV.\n");
     return 0;
 }
+#endif // BONSAI_NO_MAIN

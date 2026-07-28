@@ -29,6 +29,7 @@ bench/bandwidth
 kernels/cuda/gemv_bench
 kernels/cpu-neon-arm/gemv_neon_bench
 kernels/cpu-avx-x86/gemv_avx_bench
+kernels/cpu-avx-x86/test_shapes
 kernels/vulkan/*.spv
 kernels/vulkan/gemv_vk_bench
 kernels/vulkan/*_dot.spv
