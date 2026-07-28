@@ -23,6 +23,7 @@
 
 #include "llama.h"
 #include "policy.h"
+#include "dspark.h"
 
 #include "httplib.h"
 #include "json.hpp"
@@ -174,8 +175,19 @@ public:
 
     int n_slots = 1;
 
+    // Speculative decoding. `spec` is non-null only once DSpark::init has
+    // succeeded; every call site checks eng.spec_on() rather than the pointer
+    // so that a drafter which loaded but failed its guard stays fully off.
+    bonsai::DSpark * dspark = nullptr;
+    bool spec_on() const { return dspark && dspark->enabled; }
+
+    // `dsp` may be pre-probed (metadata read from the drafter GGUF) but is not
+    // yet initialised: the recurrent rollback ring is a CONTEXT-CREATION
+    // parameter, so the target context has to be built knowing the draft block
+    // size up front. That ordering is the whole reason this is threaded
+    // through load() instead of being a separate call afterwards.
     bool load(const std::string & path, int ngl, int n_ctx_req, int n_threads,
-              int slots, ggml_type kv_type) {
+              int slots, ggml_type kv_type, bonsai::DSpark * dsp) {
         n_slots = slots;
         llama_model_params mp = llama_model_default_params();
         mp.n_gpu_layers = ngl;
@@ -194,6 +206,19 @@ public:
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
         cp.type_k = kv_type;
         cp.type_v = kv_type;
+
+        if (dsp) {
+            // Costs (1 + n_rs_seq) copies of the recurrent state plus the same
+            // factor in the compute graph -- the price of being able to undo a
+            // rejected draft block on a gated-delta-net model at all.
+            cp.n_rs_seq      = dsp->need_n_rs_seq();
+            cp.n_outputs_max = dsp->need_n_outputs(slots);
+            // A verify batch is (1 + block) rows per slot; the ubatch must not
+            // split it, or the capture rows and the logits disagree on where a
+            // sequence's block begins.
+            cp.n_ubatch = std::max<uint32_t>(cp.n_ubatch, dsp->need_n_outputs(slots));
+        }
+
         ctx = llama_init_from_model(model, cp);
         if (!ctx) return false;
         n_ctx = (int) llama_n_ctx(ctx) / slots;   // per-sequence budget
@@ -307,6 +332,11 @@ struct GenStats {
     int    n_prompt = 0, n_cached = 0, n_generated = 0, n_lcp = 0, n_restored = 0;
     double prefill_s = 0, decode_s = 0, ttft_s = 0;
     std::string finish_reason = "stop";
+    // Speculative decoding, per request. Acceptance is reported alongside
+    // tok/s because without it a throughput regression is indistinguishable
+    // from a prompt the drafter simply finds hard.
+    bool spec = false;
+    long n_drafted = 0, n_accepted = 0, n_rounds = 0;
 };
 
 // A saved sequence state, restorable at an exact token count.
@@ -350,6 +380,14 @@ struct Slot {
     // reused. Saving at the boundary keeps it reusable in both modes.
     size_t ckpt_at = 0;
     bool   ckpt_saved = true;
+
+    // ---- speculative decoding (DSpark), per slot
+    bool spec = false;                   // speculating on this request
+    bool spec_begun = false;             // common_speculative_begin issued
+    std::vector<llama_token> draft;      // this round's proposed tokens
+    std::vector<llama_token> spec_prompt;// every token in ctx BEFORE id_last
+    int spec_base = -1;                  // batch index of id_last this round
+    long n_drafted = 0, n_accepted = 0, n_rounds = 0;
 
     // handoff to the HTTP thread
     std::mutex mu;
@@ -424,6 +462,23 @@ public:
             sl.t_start = now_s();
             sl.t_prefill_done = 0;
 
+            // Speculate on this request? DSpark is a capture-type drafter: it
+            // conditions on the target's intermediate activations at every
+            // position, so a position that is restored from cache instead of
+            // decoded leaves a hole it cannot condition on. Prompt-cache reuse
+            // and DSpark are therefore mutually exclusive -- the fork's own
+            // server disables reuse whenever capture is engaged, and so do we.
+            // This is a real tradeoff between two features of this server
+            // (checkpoints buy 4.3x TTFT, DSpark buys decode throughput), not
+            // an implementation shortcut; see results/dspark-server.txt.
+            sl.spec = eng.spec_on();
+            sl.spec_begun = false;
+            sl.draft.clear();
+            sl.spec_prompt.clear();
+            sl.n_drafted = sl.n_accepted = sl.n_rounds = 0;
+
+            const bool use_cache = gp.use_cache && !sl.spec;
+
             // Prefix reuse, subject to the hybrid rule (see reusable_prefix).
             size_t keep = 0;
             {
@@ -433,7 +488,7 @@ public:
                 while (i < n && res[i] == prompt[i]) i++;
                 sl.st.n_lcp = (int) i;
             }
-            if (gp.use_cache) {
+            if (use_cache) {
                 keep = eng.reusable_prefix(sl.id, prompt);
                 // If plain reuse cannot help (the usual case in multi-turn
                 // chat, where the template appends tokens after the
@@ -470,7 +525,16 @@ public:
                 llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, (llama_pos) keep, -1);
             }
             sl.ckpt_at    = gp.ckpt_at ? gp.ckpt_at : prompt.size();
-            sl.ckpt_saved = !(gp.use_cache && ckpt_budget_bytes > 0);
+            sl.ckpt_saved = !(use_cache && ckpt_budget_bytes > 0);
+
+            // begin() clears the drafter's capture staging window, so it must
+            // come BEFORE the prompt is decoded -- the prefill's capture rows
+            // are staged by the process() call in the decode loop and would be
+            // wiped by a later begin().
+            if (sl.spec) {
+                eng.dspark->begin(sl.id, prompt);
+                sl.spec_begun = true;
+            }
             sl.n_prefilled = keep;
             sl.st.n_prompt = (int) prompt.size();
             sl.st.n_cached = (int) keep;
@@ -519,10 +583,28 @@ private:
         sl.done = true;
         sl.st.finish_reason = reason;
         sl.st.decode_s = now_s() - (sl.t_prefill_done > 0 ? sl.t_prefill_done : sl.t_start);
+        sl.st.spec       = sl.spec;
+        sl.st.n_drafted  = sl.n_drafted;
+        sl.st.n_accepted = sl.n_accepted;
+        sl.st.n_rounds   = sl.n_rounds;
         // Record what is RESIDENT: prompt + everything generated.
         auto & res = eng.cache_tokens[sl.id];
-        res = sl.prompt;
-        res.insert(res.end(), sl.generated.begin(), sl.generated.end());
+        if (sl.spec) {
+            // A speculating slot can stop part-way through a verify block (EOG
+            // or a stop string inside the accepted run), which leaves decoded
+            // positions in the cache past the last token we actually committed.
+            // Claiming prompt+generated are resident would then hand a later
+            // request a prefix that does not match the cache -- exactly the
+            // class of bug that made the first prefix cache "work" while
+            // continuing the previous answer. Drop the sequence instead:
+            // speculating requests do not reuse the cache anyway.
+            llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, -1, -1);
+            res.clear();
+            sl.draft.clear();
+        } else {
+            res = sl.prompt;
+            res.insert(res.end(), sl.generated.begin(), sl.generated.end());
+        }
         std::lock_guard<std::mutex> lk(sl.mu);
         sl.error = err;
         sl.finished = true;
@@ -537,6 +619,39 @@ private:
             if (!any) {
                 work_cv.wait_for(lk, std::chrono::milliseconds(20));
                 continue;
+            }
+
+            // ---- draft phase
+            //
+            // common_speculative is multi-sequence by design: every slot that
+            // sets drafting=true is drafted in ONE batched forward of the
+            // drafter, so this costs a single small model pass no matter how
+            // many slots are generating.
+            if (eng.spec_on()) {
+                bool any_drafting = false;
+                for (auto & sl : slots) {
+                    if (!sl.busy || sl.done || !sl.spec) continue;
+                    if (sl.n_prefilled < sl.prompt.size()) continue;  // still prefilling
+                    if (!sl.draft.empty()) continue;                  // carried over
+
+                    // id_last: produced by this slot but not yet decoded, so it
+                    // heads the verify batch. n_past is its position.
+                    const llama_token id_last = sl.generated.empty()
+                                                  ? sl.prompt.back() : sl.generated.back();
+                    const int n_past = (int) (sl.prompt.size() + sl.generated.size() - 1);
+
+                    // Everything already resident, i.e. positions < n_past.
+                    sl.spec_prompt = sl.prompt;
+                    sl.spec_prompt.insert(sl.spec_prompt.end(),
+                                          sl.generated.begin(), sl.generated.end());
+                    sl.spec_prompt.pop_back();   // drop id_last itself
+
+                    eng.dspark->want_draft(sl.id, n_past, id_last,
+                                           &sl.spec_prompt, &sl.draft);
+                    any_drafting = true;
+                }
+                // draft() resets every drafting flag on return.
+                if (any_drafting) eng.dspark->draft_all();
             }
 
             // ---- build one batch across every active slot
@@ -571,17 +686,28 @@ private:
                     }
                     sl.n_prefilled += take;
                 } else {
-                    // Decode: one token, the last thing this slot produced.
-                    if (batch.n_tokens >= 2048) continue;
-                    const int j = batch.n_tokens;
-                    batch.token[j]    = sl.generated.empty()
-                                          ? sl.prompt.back() : sl.generated.back();
-                    batch.pos[j]      = (llama_pos) (sl.prompt.size() + sl.generated.size() - 1);
-                    batch.n_seq_id[j] = 1;
-                    batch.seq_id[j][0] = sl.id;
-                    batch.logits[j]   = true;
-                    batch.n_tokens++;
-                    outs.push_back({&sl, j});
+                    // Decode: id_last, followed by this round's draft block.
+                    // Every row carries logits -- verification samples from
+                    // each in turn and stops at the first disagreement, so a
+                    // row whose logits were not requested would end the run
+                    // early and silently cap acceptance.
+                    const int need = 1 + (int) sl.draft.size();
+                    if (batch.n_tokens + need > 2048) continue;
+                    const llama_pos p0 =
+                        (llama_pos) (sl.prompt.size() + sl.generated.size() - 1);
+                    sl.spec_base = batch.n_tokens;
+                    for (int k = 0; k < need; k++) {
+                        const int j = batch.n_tokens;
+                        batch.token[j]    = (k == 0)
+                            ? (sl.generated.empty() ? sl.prompt.back() : sl.generated.back())
+                            : sl.draft[k - 1];
+                        batch.pos[j]      = p0 + k;
+                        batch.n_seq_id[j] = 1;
+                        batch.seq_id[j][0] = sl.id;
+                        batch.logits[j]   = true;
+                        batch.n_tokens++;
+                    }
+                    outs.push_back({&sl, sl.spec_base});
                 }
             }
 
@@ -591,6 +717,17 @@ private:
             if (rc != 0) {
                 for (auto & sl : slots)
                     if (sl.busy) finish(sl, "error", "llama_decode failed");
+                lk.unlock();
+                continue;
+            }
+
+            // Stage this batch's captured tap features for the drafter. This
+            // must run after EVERY decode, prefill chunks included: DSpark
+            // conditions on a capture row for every position, and a position
+            // decoded without being staged is a hole it cannot see across.
+            if (eng.spec_on() && !eng.dspark->process(batch)) {
+                for (auto & sl : slots)
+                    if (sl.busy) finish(sl, "error", "speculative capture staging failed");
                 lk.unlock();
                 continue;
             }
@@ -616,32 +753,81 @@ private:
                 { std::lock_guard<std::mutex> slk(sl.mu); cancelled = sl.cancel; }
                 if (cancelled) { finish(sl, "abort"); continue; }
 
-                const llama_token tok = llama_sampler_sample(sl.smpl, eng.ctx, o.idx);
-                if (llama_vocab_is_eog(eng.vocab, tok)) { finish(sl, "stop"); continue; }
-
-                llama_sampler_accept(sl.smpl, tok);
-                sl.generated.push_back(tok);
-                sl.st.n_generated++;
-                if (sl.st.ttft_s == 0) sl.st.ttft_s = now_s() - sl.t_start;
-
-                const std::string piece = eng.detokenize(tok);
-
-                bool hit_stop = false;
-                if (!sl.gp.stop.empty()) {
-                    sl.tail += piece;
-                    for (const auto & ss : sl.gp.stop)
-                        if (!ss.empty() && sl.tail.find(ss) != std::string::npos) {
-                            hit_stop = true; break;
-                        }
-                    if (sl.tail.size() > 256) sl.tail.erase(0, sl.tail.size() - 256);
+                // Accept-n. With an empty draft this is exactly the old single
+                // sample. With a draft it walks the block, sampling from each
+                // row in turn and stopping at the first token the target's own
+                // sampler does not reproduce.
+                //
+                // The token sampled AT the disagreement point is itself a
+                // legitimate target sample and is kept, which is why a fully
+                // rejected block still commits one token: speculation can
+                // never yield fewer tokens per forward pass than plain AR.
+                // It is also what makes greedy speculative output identical to
+                // greedy AR output -- the gate this feature is held to.
+                const size_t nd = sl.draft.size();
+                std::vector<llama_token> ids;
+                for (size_t k = 0; k <= nd; k++) {
+                    const llama_token t =
+                        llama_sampler_sample(sl.smpl, eng.ctx, o.idx + (int) k);
+                    llama_sampler_accept(sl.smpl, t);
+                    ids.push_back(t);
+                    if (k == nd || t != sl.draft[k]) break;
                 }
 
-                { std::lock_guard<std::mutex> slk(sl.mu);
-                  sl.out.push_back(piece);
-                  sl.cv.notify_all(); }
+                if (sl.spec && nd > 0) {
+                    const size_t n_acc = ids.size() - 1;
+                    sl.n_drafted  += (long) nd;
+                    sl.n_accepted += (long) n_acc;
+                    sl.n_rounds   += 1;
+                    eng.dspark->stats.n_drafted  += (long) nd;
+                    eng.dspark->stats.n_accepted += (long) n_acc;
+                    eng.dspark->stats.n_rounds   += 1;
 
-                if (hit_stop) { finish(sl, "stop"); continue; }
-                if (sl.st.n_generated >= sl.gp.n_predict) { finish(sl, "length"); continue; }
+                    // Crop the rejected tail out of the target cache. On this
+                    // hybrid model that partial crop only works because the
+                    // context was created with a recurrent rollback ring;
+                    // DSpark::init refuses to enable speculation otherwise,
+                    // since seq_rm would return false WITHOUT mutating and the
+                    // gated-delta-net state would quietly absorb every
+                    // rejected draft tail from then on.
+                    const llama_pos p0 =
+                        (llama_pos) (sl.prompt.size() + sl.generated.size() - 1);
+                    const llama_pos keep_to = p0 + (llama_pos) ids.size();
+                    if (!llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, keep_to, -1)) {
+                        finish(sl, "error",
+                               "speculative rollback failed: recurrent state could not be cropped");
+                        continue;
+                    }
+                    eng.dspark->accept(sl.id, (int) n_acc);
+                }
+                sl.draft.clear();
+
+                for (const llama_token tok : ids) {
+                    if (llama_vocab_is_eog(eng.vocab, tok)) { finish(sl, "stop"); break; }
+
+                    sl.generated.push_back(tok);
+                    sl.st.n_generated++;
+                    if (sl.st.ttft_s == 0) sl.st.ttft_s = now_s() - sl.t_start;
+
+                    const std::string piece = eng.detokenize(tok);
+
+                    bool hit_stop = false;
+                    if (!sl.gp.stop.empty()) {
+                        sl.tail += piece;
+                        for (const auto & ss : sl.gp.stop)
+                            if (!ss.empty() && sl.tail.find(ss) != std::string::npos) {
+                                hit_stop = true; break;
+                            }
+                        if (sl.tail.size() > 256) sl.tail.erase(0, sl.tail.size() - 256);
+                    }
+
+                    { std::lock_guard<std::mutex> slk(sl.mu);
+                      sl.out.push_back(piece);
+                      sl.cv.notify_all(); }
+
+                    if (hit_stop) { finish(sl, "stop"); break; }
+                    if (sl.st.n_generated >= sl.gp.n_predict) { finish(sl, "length"); break; }
+                }
             }
             lk.unlock();
         }
@@ -757,6 +943,27 @@ static GenParams parse_gen_params(const json & body, int default_predict) {
     return gp;
 }
 
+// Per-request speculative telemetry.
+//
+// `alpha` is the acceptance rate -- the fraction of proposed draft tokens the
+// target agreed with. It is the number that decides whether speculation is
+// worth running at all: the breakeven is alpha > (cost of a draft round) /
+// (cost of a target step), so a tok/s figure reported without it cannot be
+// told apart from a prompt the drafter simply finds hard.
+static json spec_json(const GenStats & st) {
+    if (!st.spec) return json{{"enabled", false}};
+    return json{
+        {"enabled", true},
+        {"drafted", st.n_drafted},
+        {"accepted", st.n_accepted},
+        {"rounds", st.n_rounds},
+        {"alpha", st.n_drafted > 0 ? (double) st.n_accepted / (double) st.n_drafted : 0.0},
+        // Tokens committed per target forward pass, counting the one that is
+        // free. 1.0 means speculation bought nothing this request.
+        {"tokens_per_round", st.n_rounds > 0
+            ? (double) (st.n_accepted + st.n_rounds) / (double) st.n_rounds : 0.0}};
+}
+
 static json error_json(const std::string & msg, const char * type, int code) {
     return json{{"error", {{"message", msg}, {"type", type}, {"code", code}}}};
 }
@@ -774,6 +981,8 @@ int main(int argc, char ** argv) {
     int port = 8080, n_ctx = 16384, ngl = 999, n_threads = -1, default_predict = 512;
     int n_slots = 4;
     int ckpt_mb = 2048;          // total checkpoint budget
+    std::string draft_path;      // DSpark drafter GGUF
+    int draft_n_max = 4;         // raised to the drafter's block_size if larger
     std::string kv_type = "q8_0";
     bool deterministic = true, preflight = true;
     bonsai::Backend backend = bonsai::Backend::CPU;
@@ -794,6 +1003,8 @@ int main(int argc, char ** argv) {
         else if (a == "--slots" || a == "-np")        n_slots = atoi(next().c_str());
         else if (a == "-ctk" || a == "--cache-type")  kv_type = next();
         else if (a == "--checkpoint-mb")              ckpt_mb = atoi(next().c_str());
+        else if (a == "-md" || a == "--model-draft")  draft_path = next();
+        else if (a == "--draft-max")                  draft_n_max = atoi(next().c_str());
         else if (a == "--webui")                      webui_path = next();
         else if (a == "--backend") {
             const std::string b = next();
@@ -827,6 +1038,15 @@ int main(int argc, char ** argv) {
 "      --checkpoint-mb N per-checkpoint size cap, default 2048, 0 disables.\n"
 "                        State checkpoints are what make multi-turn prefix\n"
 "                        reuse possible at all on a hybrid model\n"
+"  -md, --model-draft P  DSpark drafter GGUF. Enables speculative decoding\n"
+"                        where policy allows it. NOTE: speculating requests\n"
+"                        cannot use the prompt cache -- DSpark needs a capture\n"
+"                        row at every position, so a restored checkpoint would\n"
+"                        leave holes it cannot condition on\n"
+"      --draft-max N     draft block bound, default 4. Raised automatically to\n"
+"                        the drafter's block_size: it also sizes the recurrent\n"
+"                        rollback ring, which must be able to undo a whole\n"
+"                        rejected block or the GDN state silently corrupts\n"
 "      --webui PATH      serve this HTML file at /\n"
 "      --no-deterministic  allow the racy-but-1%%-faster Vulkan graph optimizer\n"
 "      --no-preflight    skip the startup determinism probe\n"
@@ -863,10 +1083,36 @@ int main(int argc, char ** argv) {
     printf("policy:\n");
     for (const auto & r : pol.reasons) printf("  - %s\n", r.c_str());
 
-    if (pol.speculate) {
-        printf("  ! speculative decoding is not yet implemented in this binary;\n"
-               "    running native decode. Use reference/serve_reference.sh for\n"
-               "    DSpark until the verify/rollback loop is ported and gated.\n");
+    // ---- DSpark, phase 1: metadata only.
+    //
+    // This has to happen BEFORE the target context is created. The recurrent
+    // rollback ring (n_rs_seq) is a context-creation parameter and cannot be
+    // resized afterwards, and its required size comes from the drafter's
+    // block_size, which lives in the drafter GGUF. Get the order wrong and the
+    // ring is zero -- which does not fail, it just makes every post-verify
+    // crop a no-op while the gated-delta-net state absorbs rejected drafts.
+    bonsai::DSpark dspark;
+    bonsai::DSpark * dsp = nullptr;
+    if (pol.speculate && !draft_path.empty()) {
+        std::string err;
+        if (!dspark.probe(draft_path, draft_n_max, err)) {
+            fprintf(stderr, "error: drafter %s: %s\n", draft_path.c_str(), err.c_str());
+            return 1;
+        }
+        dsp = &dspark;
+        printf("  - DSpark: block_size=%u, %zu capture layers, rollback ring=%u\n",
+               dspark.block_size, dspark.capture_layers.size(), dspark.need_n_rs_seq());
+        if (dspark.n_max > draft_n_max) {
+            printf("  - DSpark: raised --draft-max %d -> %d to match the drafter's\n"
+                   "    block_size (the ring must be able to undo a whole block)\n",
+                   draft_n_max, dspark.n_max);
+        }
+    } else if (pol.speculate && draft_path.empty()) {
+        printf("  ! policy allows speculation but no -md/--model-draft was given;\n"
+               "    running native decode.\n");
+    } else if (!draft_path.empty() && !pol.speculate) {
+        printf("  ! a drafter was given but policy says speculation LOSES here;\n"
+               "    ignoring it. Pass --speculate on to override.\n");
     }
 
     ggml_type kvt = GGML_TYPE_Q8_0;
@@ -880,11 +1126,30 @@ int main(int argc, char ** argv) {
     Engine eng;
     printf("loading %s ...\n", model_path.c_str());
     fflush(stdout);
-    if (!eng.load(model_path, ngl, n_ctx, pol.n_threads, n_slots, kvt)) {
+    if (!eng.load(model_path, ngl, n_ctx, pol.n_threads, n_slots, kvt, dsp)) {
         fprintf(stderr, "error: failed to load model\n");
         return 1;
     }
     printf("loaded: %d slot(s) x n_ctx=%d, KV %s\n", n_slots, eng.n_ctx, kv_type.c_str());
+
+    // ---- DSpark, phase 2: against the context we actually got.
+    if (dsp) {
+        std::string err;
+        printf("loading drafter %s ...\n", draft_path.c_str());
+        fflush(stdout);
+        if (!dspark.init(eng.ctx, n_slots, eng.n_ctx, ngl, err)) {
+            // Refuse to start rather than serve silently-degraded speculation.
+            // Every failure mode here (undersized ring, wrong drafter type,
+            // capture not engaged) produces plausible text with corrupted
+            // recurrent state, which no output-shaped check would catch.
+            fprintf(stderr, "error: DSpark: %s\n", err.c_str());
+            return 1;
+        }
+        eng.dspark = &dspark;
+        printf("DSpark: %s\n", dspark.status.c_str());
+        printf("  note: prompt-cache reuse is DISABLED for speculating requests --\n"
+               "        a capture row is required at every position.\n");
+    }
 
     auto sched = std::make_unique<Scheduler>(eng);
     sched->ckpt_budget_bytes = (size_t) std::max(0, ckpt_mb) << 20;
@@ -964,6 +1229,20 @@ int main(int argc, char ** argv) {
         j["backend"] = bonsai::backend_name(pol.backend);
         j["variant"] = pol.variant;
         j["speculation"] = pol.speculate;
+        if (eng.spec_on()) {
+            const auto & s = eng.dspark->stats;
+            j["spec"] = json{
+                {"enabled", true},
+                {"impl", eng.dspark->status},
+                {"block_size", eng.dspark->block_size},
+                {"drafted", s.n_drafted.load()},
+                {"accepted", s.n_accepted.load()},
+                {"rounds", s.n_rounds.load()},
+                {"alpha", s.alpha()},
+                {"tokens_per_round", s.tokens_per_round()}};
+        } else {
+            j["spec"] = json{{"enabled", false}};
+        }
         res.set_content(j.dump(2), "application/json");
     });
 
@@ -1099,6 +1378,7 @@ int main(int argc, char ** argv) {
                 {"backend", bonsai::backend_name(pol.backend)},
                 {"speculation", pol.speculate},
                 {"decode_tok_s", st.decode_s > 0 ? st.n_generated / st.decode_s : 0.0},
+                {"spec", spec_json(st)},
                 {"prefill_tok_s", st.prefill_s > 0 ? (st.n_prompt - st.n_cached) / st.prefill_s : 0.0},
                 {"ttft_s", st.ttft_s},
                 {"cached_tokens", st.n_cached},
@@ -1196,6 +1476,7 @@ int main(int argc, char ** argv) {
                     {"bonsai", json{
                         {"backend", bonsai::backend_name(pol.backend)},
                         {"decode_tok_s", st.decode_s > 0 ? st.n_generated / st.decode_s : 0.0},
+                        {"spec", spec_json(st)},
                         {"ttft_s", st.ttft_s},
                         {"cached_tokens", st.n_cached}}}});
 

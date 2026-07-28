@@ -43,6 +43,9 @@ hardware backs it. Everything else lives under Open Questions.
 | W24 | **State checkpoints make multi-turn prefix reuse work on a hybrid model** | TTFT 1.557s -> 0.360s (4.3x), restored output character-identical to a fresh prefill | `189e1eb` |
 | W25 | Closed the last 5 Vulkan divergences: near-ties, not errors | gaps 0.002-0.065 nats; CPU flips the same 2 prompts at the same tokens | `389f5db` |
 | W26 | **Wide loads shipped in ggml MMVQ: Vulkan now ties/beats CUDA** | Q2_0 15.76 -> 16.75 (CUDA 16.77), Q1_0 19.03 -> 20.27 (CUDA 19.03) | `70be7e3` |
+| W27 | **DSpark runs in-process in `bonsai-server`** | code 1.74x/1.80x, prose 1.49x/1.60x (ternary/1-bit); greedy identical to AR on 14/20 | pending |
+| W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | pending |
+| W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | pending |
 
 ---
 
@@ -426,6 +429,34 @@ not a win. Caching, reordering and reuse optimisations all make things
 faster *by doing less work*, so "faster" is exactly what a broken one looks
 like. Pair every such change with an output-equality assertion against the
 unoptimised path -- here, four lines of gate.
+
+### L13. A test that compared two empty strings and reported PASS
+
+The DSpark compounding test read `content` from the completion response.
+`bonsai-server` returns `choices[0].text`. Both sides came back as the
+empty string, `a == b` was trivially true, and the test printed
+`identical=True` at n=100, 250 and 500 -- exactly the result the
+hypothesis predicted, for none of the reasons claimed.
+
+It was caught only because a companion field printed `common_prefix=0/0`,
+and 0 total characters is not something a 500-token generation produces.
+
+Two things generalise:
+
+- **An assertion that cannot fail is worse than no assertion**, because it
+  occupies the slot where a real check would have gone and reports
+  success. `assert t, "empty"` before comparing is one line and makes the
+  comparison mean something. `bench/gate_dspark.sh` now does this.
+- **A test agreeing with your hypothesis is the moment to check the test**,
+  not the moment to write it up. This one produced the right answer three
+  times in a row while measuring nothing, and the tell was a secondary
+  number that had no business being zero. Print a quantity the test does
+  not depend on; it is what catches a vacuous pass.
+
+This is the same family as L6 (a launch failure reported as PASS) and L8
+(a gate whose failure mode is silence by design). The recurring shape in
+this repo is not "the code was wrong" -- it is **"the check could not have
+noticed"**.
 
 ### L12. Post-divergence drift measures nothing -- and it was the headline number
 
@@ -923,6 +954,89 @@ Consequence: **native output cannot be the oracle for a DSpark run**, so
 all gates compare like mode against like mode. Unresolved whether this is
 Thor-specific numerics or general to the fork -- needs a second device.
 
+**UPDATE (W27): the mechanism is now identified, and it did not need a
+second device.** See S8 -- batch composition alone flips these tokens with
+no speculation anywhere in the picture. S5's observation stands; its
+"needs a second device" caveat does not.
+
+### S8. Speculation's divergence from native is a batch-shape effect
+
+In-server DSpark reproduces greedy native output character-for-character
+on 14 of 20 runs. The other 6 had two candidate causes, and both predicted
+the same first observation (prose diverges more, prose has more
+rejections), so they had to be separated rather than chosen between:
+
+- **H1** near-tie float reassociation (benign)
+- **H2** rejected drafts not being cropped out of the GDN state (severe)
+
+Four discriminating measurements, none of which is "the output looks fine":
+
+1. **Rollback is exercised heavily in runs that ARE identical.** The
+   levenshtein prompt rejects ~28 draft tokens over ~45 rounds, each
+   forcing a partial crop of the recurrent state, and is character-identical
+   to native across 200 tokens. Corruption cannot be selective about which
+   prompts it corrupts.
+2. **Divergence onset does not move with length.** Same prompt diverges at
+   char 64 at n=100, 250 and 500 while rejections rise 72 -> 143.
+   Corruption accumulates; one flipped token does not.
+3. **This implementation agrees with native MORE than the fork's own
+   DSpark server does** (3/4 vs 1/4 on a cross-check). A broken rollback
+   would agree less.
+4. **The decisive one: batch composition alone flips tokens.** Two
+   identical greedy requests sent concurrently to a 2-slot,
+   **non-speculative** server returned different text from each other.
+   Nothing drafted, verified or rolled back -- only the shape of the decode
+   batch differed.
+
+(4) supplies a sufficient cause that involves no speculation at all, and
+speculation changes batch shape by construction. Combined with W25's
+near-tie statistics (1.17% of tokens within 0.065 nats of a coin flip, so
+a 150-token trace has a ~78% chance of containing one), the divergences
+are reassociation, not a rollback defect.
+
+The generalisable part: **when two hypotheses predict the same
+observation, the cheap move is to find a case where only one of them
+predicts anything.** Here that was "run the suspect mechanism with the
+suspect component removed" -- concurrency without speculation.
+
+### S9. The round-cost constant, not acceptance, is what to serve by
+
+Solving `R = tokens_per_round / speedup` on every run gives a round cost
+in plain-decode-steps that is **flat**:
+
+| | R | spread | over |
+| :-- | --: | :-- | :-- |
+| ternary Q2_0 | 2.184 | 2.136 - 2.219 | 10 runs |
+| 1-bit Q1_0 | 2.179 | 2.147 - 2.306 | 10 runs |
+
+Flat across a 2.3x range of measured speedups (0.91x to 2.13x) and across
+both quantisations. That collapses S1's `alpha > c` rule to one number:
+
+```
+1 + block_size*alpha = 2.18   ->   alpha* = 0.296
+```
+
+Estimated from all ten runs, it then **predicts the one losing case**:
+alpha 0.238 measures 0.91x against a predicted 0.90x. A fitted constant
+that reproduces the outlier it was not fitted to is worth more than the
+mean speedup it came from.
+
+R being invariant to quantisation is the surprise. Q1_0 is 3.8 GB against
+ternary's 7.1 GB, yet native decode is only 1.12x faster (18.8 vs 16.7
+tok/s) rather than the ~1.8x weight bandwidth alone implies -- so CUDA
+decode at this size is **not** purely weight-bandwidth-bound, and drafter
+and verify batch scale with whatever else dominates, leaving the ratio
+fixed. Practical consequence: `alpha* ~= 0.3` is a property of the
+drafter/target pair, not something to re-measure per build.
+
+Corollary that cost two prompts to learn: an early 2-prompt probe put
+prose at 0.89x/0.93x and looked like a clean "code wins, prose loses"
+split. At five prompts per class, prose means 1.49x and only one of five
+is below breakeven -- and the spread *within* prose (0.238-0.913) is wider
+than the gap *between* the classes (0.707 vs 0.563). Acceptance is a
+per-prompt property. Two samples per class was enough to see a difference
+and not enough to see it was the wrong one.
+
 ---
 
 ## Toolchain learnings
@@ -1054,7 +1168,8 @@ speculation to amortize. Always lead with absolute tok/s.
 
 | # | Question | Why it matters |
 | :-- | :-- | :-- |
-| Q1 | Is the temp-0 DSpark divergence Thor-specific or general? | Needs a second device. If general, it is a finding about the reference implementation. |
+| ~~Q1~~ | ~~Is the temp-0 DSpark divergence Thor-specific or general?~~ | **LIKELY ANSWERED without a second device: it is a batch-shape reassociation effect at near-ties, reproducible with speculation entirely absent. See S8.** |
+| Q6 | Can the capture path be made compatible with state checkpoints? | DSpark and prefix caching are currently mutually exclusive (capture rows are needed at every position). If a checkpoint could carry its capture window, both features could run at once. |
 | Q2 | Why can't we reproduce 229 GB/s? We get 178.5. | Ladder shape matches prediction. The three obvious levers (wide loads, row-blocking with global and with shared activations) are now all tested and all lose, so the gap is not any of them. |
 | Q3 | Does rebuilding the fork with glslang >= 16 lift its Vulkan tok/s? | Directly testable; the backend currently has no integer-dot path. |
 | ~~Q2~~ | ~~Why can't we reproduce 229 GB/s?~~ | **LIKELY ANSWERED: L2 residency. v5 hits 237.9 and v7 308.6 GB/s on L2-resident shapes; see K2c.** |

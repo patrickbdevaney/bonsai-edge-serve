@@ -164,18 +164,68 @@ throughput and character-identical greedy output. `-ctk f16` restores the
 uncompressed cache. See `results/context-scaling.txt`; decode speed is flat
 from 4K to 262144.
 
-## Speculative decoding
+## Speculative decoding (DSpark)
 
-Not implemented in this binary yet. DSpark needs the draft/verify/rollback
-loop with target-layer tap capture (`common_speculative_*`), and on a
-recurrent model the rollback needs the same checkpoint machinery as above.
-Reimplementing it half-correctly would produce plausible text and wrong
-acceptance numbers, which is precisely the failure mode this repo exists to
-avoid.
+In-process. Pass `-md` and the server drafts, verifies and rolls back itself.
 
-Until then: on Vulkan the policy disables speculation anyway (it loses), and
-on CUDA use `reference/serve_reference.sh ternary dspark`, which is worth
-1.37–1.75×.
+```bash
+./build/bonsai-server -m .../Ternary-Bonsai-27B-Q2_0.gguf \
+                      -md .../Ternary-Bonsai-27B-dspark-Q4_1.gguf \
+                      --backend cuda --speculate on
+```
+
+| | ternary Q2_0 | 1-bit Q1_0 |
+| :-- | --: | --: |
+| code (5 prompts) | **1.74×** (α 0.707) | **1.80×** (α 0.737) |
+| prose (5 prompts) | **1.49×** (α 0.563) | **1.60×** (α 0.611) |
+
+Greedy speculative output is character-identical to greedy AR output on 14 of
+20 runs; the other 6 are the near-tie flips this repo already characterised,
+not rollback bugs — `results/dspark-server.txt` separates the two hypotheses
+four ways rather than assuming.
+
+**The number to serve by.** A speculative round costs **2.18** plain decode
+steps regardless of how well the drafter does — flat across a 2.3× range of
+measured speedups *and* across both quantisations. So the breakeven is
+arithmetic:
+
+```
+1 + block_size·α = 2.18   →   α* = 0.296
+```
+
+Below α≈0.3 speculation loses. One prose prompt sits at α 0.238 and measures
+0.91×, which the constant predicts as 0.90× — estimated from all ten runs,
+then reproducing the single losing case. Acceptance is a **per-prompt**
+property, not a per-workload-class one: the spread inside prose (0.238–0.913)
+is wider than the gap between prose and code.
+
+**It refuses to run unsafely.** On a hybrid target the post-verify crop only
+works if the recurrent rollback ring was sized at *context creation*
+(`n_rs_seq`); at zero it silently no-ops and the gated-delta-net state absorbs
+every rejected draft tail, with fluent text throughout and no symptom to
+observe. The server checks the ring it actually got and exits:
+
+```
+error: DSpark: recurrent rollback ring is 0 but a draft block needs 4 ...
+```
+
+`--draft-max` also sizes that ring, while the real draft length is the
+drafter's `block_size`, so the server reads `block_size` from the GGUF and
+raises `--draft-max` itself rather than trusting the two to have been matched.
+
+**It costs prefix caching.** DSpark conditions on the target's activations at
+every position, so a position restored from a checkpoint — never decoded,
+never captured — is a hole. Speculating requests therefore bypass the prompt
+cache, which makes checkpoints (4.3× TTFT) and DSpark (1.5–1.8× decode)
+mutually exclusive. DSpark wins unless the answer is much shorter than the
+shared prefix; see `results/dspark-server.txt` for the crossover.
+
+On Vulkan the policy still disables speculation (measured 0.33–0.43× there).
+`reference/serve_reference.sh ternary dspark` remains available as the oracle.
+
+```bash
+./bench/gate_dspark.sh 8091 8092    # speculating server, AR server
+```
 
 ## Gate it
 

@@ -31,6 +31,19 @@ echo "output:  $OUT"
 
 # httplib.h needs -DCPPHTTPLIB_OPENSSL_SUPPORT only for https; plain HTTP
 # on localhost needs nothing beyond pthread.
+# DSpark needs common/ (common_speculative_*) and src/llama-ext.h
+# (llama_set_capture_layers). Those live in libllama-common, which is only
+# produced by a full fork build -- if it is missing, the server still builds,
+# just without speculative decoding.
+SPEC_FLAGS=()
+if [ -f "$LIB/libllama-common.so" ]; then
+    SPEC_FLAGS=(-DBONSAI_HAVE_DSPARK=1 -I "$FORK_DIR/common" -I "$FORK_DIR/src" -lllama-common)
+    echo "dspark:  enabled (libllama-common found)"
+else
+    echo "dspark:  DISABLED -- no libllama-common.so in $LIB"
+    echo "         (speculative decoding needs a fork build that produces it)"
+fi
+
 g++ -O2 -std=c++17 -DNDEBUG \
     -I "$REPO/server" \
     -I "$FORK_DIR/include" \
@@ -42,6 +55,7 @@ g++ -O2 -std=c++17 -DNDEBUG \
     "$FORK_DIR/vendor/cpp-httplib/httplib.cpp" \
     -o "$OUT" \
     -L "$LIB" -lllama -lggml -lggml-base \
+    "${SPEC_FLAGS[@]}" \
     -Wl,-rpath,"$LIB" \
     -lpthread
 

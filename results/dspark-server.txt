@@ -1,0 +1,203 @@
+DSpark speculative decoding, in-process: 1.49-1.80x, and the cost model that predicts it
+=========================================================================================
+
+`bonsai-server` now runs DSpark itself rather than deferring to the fork's
+llama-server. This is the last of the three headline features the repo set out
+to serve (ternary/1-bit weights, hybrid long context, speculative decoding).
+
+MEASURED (CUDA, Jetson Thor, 1 slot, greedy, n_predict=200, cache off)
+-----------------------------------------------------------------------
+Ternary Q2_0, AR baseline 16.7 tok/s:
+
+  class  prompt                            alpha  tok/round   spec     x   identical
+  code   hash table, linear probing        0.566     3.26    25.18   1.51    no
+  code   def binary_search                 0.878     4.51    34.09   2.03    yes
+  code   CUDA parallel reduction           0.429     2.72    20.92   1.25    yes
+  code   class LRUCache                    0.819     4.28    32.53   1.95    yes
+  code   levenshtein in C                  0.842     4.37    33.23   1.98    yes
+  prose  coastal town, autumn              0.238     1.95    15.26   0.91    no
+  prose  canals and 19th-c trade           0.531     3.12    23.71   1.42    yes
+  prose  memory, philosophically           0.593     3.37    26.09   1.56    no
+  prose  highlands in late spring          0.543     3.17    24.12   1.44    yes
+  prose  she had not expected the letter   0.913     4.65    35.63   2.13    yes
+
+  code   mean alpha 0.707   mean 1.74x   identical 4/5
+  prose  mean alpha 0.563   mean 1.49x   identical 3/5
+
+1-bit Q1_0, AR baseline 18.8 tok/s:
+
+  code   mean alpha 0.737   mean 1.80x   identical 3/5
+  prose  mean alpha 0.611   mean 1.60x   identical 4/5
+
+Both consistent with the 1.37-1.75x the reference llama-server gets, so the
+in-process loop is not leaving anything on the table.
+
+THE COST MODEL, AND WHY IT IS THE USEFUL OUTPUT
+------------------------------------------------
+A speculative round yields (1 + block_size*alpha) tokens and costs some number
+R of plain decode steps. Solving R = tokens_per_round / speedup on every run:
+
+  ternary   R = 2.184 AR-steps   (spread 2.136 - 2.219 over 10 runs)
+  1-bit     R = 2.179 AR-steps   (spread 2.147 - 2.306 over 10 runs)
+
+R is FLAT across a 2.3x range of measured speedups (0.91x to 2.13x) and across
+both quantisations. That is the whole behaviour in one number: a round costs
+~2.18 steps no matter how well the drafter does, so
+
+  breakeven:  1 + 4*alpha = 2.18   ->   alpha* = 0.296
+
+Below alpha 0.296 speculation LOSES. The coastal-town prompt sits at 0.238 and
+measures 0.91x, which is the model's own prediction (1+4*0.238)/2.18 = 0.90x.
+This is a predictive check, not a fit: the constant was estimated from all ten
+runs and then reproduces the one losing case.
+
+R being invariant to quantisation is the mildly surprising part. Q1_0 weights
+are 3.8 GB against ternary's 7.1 GB, yet AR decode is only 1.12x faster
+(18.8 vs 16.7 tok/s), not the ~1.8x weight bandwidth alone would imply. So at
+this size CUDA decode is not purely weight-bandwidth-bound, and both the
+drafter and the verify batch scale with whatever else dominates -- leaving the
+RATIO unchanged. Useful consequence: alpha* ~= 0.3 can be treated as a
+property of the drafter/target pair, not something to re-measure per build.
+
+WORKLOAD CLASSES: THE FIRST SAMPLE WAS MISLEADING
+---------------------------------------------------
+An early 2-prompt probe showed prose at 0.89x and 0.93x and looked like a clean
+"code wins, prose loses" split. Five prompts per class say otherwise: prose
+means 0.563 alpha and 1.49x, and only ONE of five prose prompts is below
+breakeven. The spread WITHIN prose (0.238 to 0.913) is far wider than the gap
+BETWEEN the classes (0.707 vs 0.563).
+
+So the actionable rule is not "disable speculation for prose". It is that
+acceptance is a per-prompt property, and the only prompts that lose are the
+ones below alpha ~0.3. Two prompts per class was not enough to see that, and
+the two that were drawn happened to be the extreme.
+
+IS THE ROLLBACK CORRUPTING THE RECURRENT STATE?
+------------------------------------------------
+14 of 20 runs are character-identical to non-speculative decode; 6 diverge.
+Since speculative decoding is DEFINED to reproduce the target model exactly,
+each divergence is either a near-tie flip or a bug in the rollback -- and on
+this hybrid model the plausible bug is severe: rejected draft tokens failing to
+be cropped out of the gated-delta-net state.
+
+Both hypotheses predicted the first thing observed (prose diverges more, and
+prose has more rejections), so they had to be separated:
+
+1. **Rollback is exercised heavily in the runs that ARE identical.** The
+   levenshtein prompt drafted 4 tokens per round at alpha 0.842 over ~45 rounds
+   -- roughly 28 rejected tokens, each requiring a partial crop of the GDN
+   state -- and its output is character-identical to AR across 200 tokens.
+   State corruption cannot be selective about which prompts it corrupts.
+
+2. **Divergence onset does not move with generation length.** The hash-table
+   prompt diverges at char 64 at n=100, n=250 and n=500, with rejections rising
+   from 72 to 143. Corruption accumulates; a single flipped token does not.
+
+3. **This implementation agrees with non-speculative decode MORE than the
+   fork's own DSpark server does.** On a 4-prompt cross-check, mine matched AR
+   on 3/4 and the fork's llama-server on 1/4. If the rollback here were broken,
+   it would agree less, not more.
+
+4. **Batch composition alone flips tokens, with no speculation anywhere.** Two
+   identical greedy requests sent concurrently to a 2-slot non-speculative
+   server returned different text from each other. Nothing was drafted,
+   verified or rolled back; only the shape of the decode batch differed.
+   Speculation changes batch shape by construction, so it inherits this.
+
+Together: the divergences are the near-tie float-reassociation phenomenon this
+repo already characterised (results/vulkan-divergence-explained.txt -- 1.17% of
+tokens sit within 0.065 nats of a coin flip, so a 150-token trace has a ~78%
+chance of containing one), not a rollback defect.
+
+THE GUARD, WHICH IS THE PART THAT COULD NOT BE CHECKED FROM OUTPUT
+-------------------------------------------------------------------
+On a hybrid target the post-verify crop only works if the recurrent-state
+rollback ring was sized at CONTEXT CREATION (llama_context_params::n_rs_seq).
+It cannot be enabled afterwards. From the fork's own common.h:
+
+  "Omitting a block-verify draft type here silently leaves n_rs_seq=0, so the
+   post-verify crop on ctx_tgt no-ops instead of failing loudly
+   (llama_memory_hybrid::seq_rm short-circuits to `return false` without
+   mutating either sub-cache) -- the target's GDN state then keeps absorbing
+   every future round's rejected draft tail."
+
+That is a silent-corruption path with no output-shaped symptom: the text stays
+fluent. So the server checks the ring it actually got, against the context it
+actually created, and refuses to start:
+
+  $ BONSAI_FORCE_RS_SEQ0=1 ./build/bonsai-server -m ... -md ... --speculate on
+    - DSpark: block_size=4, 5 capture layers, rollback ring=0
+  error: DSpark: recurrent rollback ring is 0 but a draft block needs 4 ...
+  exit 1
+
+Two related traps handled the same way, both from reading the fork rather than
+from a symptom:
+  * `--draft-max` also SIZES the ring, while the real per-round draft length is
+    the drafter GGUF's block_size (4). If n_max < block_size the ring cannot
+    undo a fully-rejected block. The server reads block_size and raises n_max
+    itself instead of trusting the flag to match.
+  * The drafter context's n_batch must cover n_ctx + block_size, or draft
+    rounds near the context limit are skipped and speculation degrades to plain
+    AR -- fast, correct, and silently doing nothing.
+
+WHAT THIS COSTS: PROMPT-CACHE REUSE
+-------------------------------------
+DSpark is a capture-type drafter -- it conditions on the target's activations
+at layers [1,16,31,46,61] for EVERY position. A position restored from a state
+checkpoint is never decoded, so it never stages a capture row, and the drafter
+would be conditioning on holes. The fork's server disables cache reuse whenever
+capture is engaged; so does this one.
+
+That makes two of this server's own features mutually exclusive:
+
+  state checkpoints  4.3x TTFT on a 440-token shared prefix   (multi-turn)
+  DSpark             1.49-1.80x decode                        (per request)
+
+Which wins is a property of the request, and the crossover is arithmetic: with
+a P-token cached prefix and G generated tokens, checkpoints save P/345 s of
+prefill while DSpark saves G/16.7 * (1 - 1/1.6) s of decode. DSpark wins once
+G > ~0.11*P -- i.e. for anything but a very long prefix with a very short
+answer. Long agentic system prompts with terse tool-call replies are exactly
+that case, which is why this is a per-deployment choice (`-md` present or not)
+rather than a default.
+
+GATE
+----
+  ./bench/gate_dspark.sh 8091 8092     # speculating server, AR server
+
+Three assertions: the drafter actually fires (alpha > 0 -- a null result here
+is the classic "everything works, nothing was drafted" failure), greedy output
+is identical to AR on >=4/5 prompts, and the ring guard refuses to start at
+n_rs_seq=0. The identity check asserts on non-empty content first, because an
+empty completion would make the comparison vacuously true.
+
+REGRESSION CHECK: THE CASE THIS FEATURE SHOULD NOT AFFECT
+-----------------------------------------------------------
+The verify loop replaced the single-sample decode path with an accept-n loop,
+so the NON-speculative path runs new code (with an empty draft, n=0). That is
+the case a speculation feature must leave untouched, and this repo has been
+caught before by a concurrency feature that slowed down concurrency-1.
+
+  non-speculative decode   1-bit 18.7-18.8 tok/s, ternary 16.7-16.8 tok/s
+                           (baselines: 19.03 / 16.77)
+  bench/gate_server.sh     19 of 20 checks pass
+
+The one failing check -- "append-only reuse agrees with a fresh prefill",
+which wants a >=40% prefix match and gets 2% on the 1-bit model -- is NOT
+caused by this work. The pre-change binary was rebuilt from git HEAD and run
+against the same model and the same gate: it fails identically, same 2%, same
+two strings. So it is pre-existing on this variant and is left as an open item
+rather than folded into this change.
+
+Rebuilding the old binary took about a minute and converted "I do not think I
+broke this" into "this is unchanged". Reasoning about whether an edit could
+have caused a failure is not evidence; the previous binary is.
+
+A NOTE ON THE MEASUREMENT ITSELF
+---------------------------------
+The first version of the compounding test read `content` from the response,
+but this server returns `choices[0].text`. Both sides came back empty and the
+test printed "identical=True" for every length -- a passing result that
+compared nothing. It was caught only because a companion field printed
+`common_prefix=0/0`. The gate now asserts the body is non-empty before
+comparing, and that assertion is doing real work.

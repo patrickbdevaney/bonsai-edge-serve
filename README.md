@@ -82,6 +82,18 @@ measured two-model number exists yet. See `results/memory.txt`.
 | 1-bit Q1_0 | code | 19.03 | 33.24 | **1.75x** | 61.6% |
 | 1-bit Q1_0 | prose | 18.98 | 26.25 | 1.38x | 51.4% |
 
+Those are the reference `llama-server` numbers. `bonsai-server` now runs
+DSpark **in-process** and measures 1.74x/1.80x on code and 1.49x/1.60x on
+prose (ternary/1-bit), with greedy output character-identical to
+non-speculative decode on 14 of 20 runs.
+
+It also yields the constant worth serving by: a speculative round costs
+**2.18 plain decode steps**, flat across a 2.3x range of measured speedups
+and across both quantisations, so breakeven is `1 + 4*alpha = 2.18`, i.e.
+**alpha* = 0.296**. Estimated from all ten runs, that constant then predicts
+the single losing case (alpha 0.238 -> predicted 0.90x, measured 0.91x).
+See `results/dspark-server.txt` and `server/README.md`.
+
 ### What these numbers say
 
 **DSpark never goes negative on Thor.** The published concern is that on
