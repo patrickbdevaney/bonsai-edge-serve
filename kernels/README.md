@@ -483,6 +483,33 @@ unpack ALU that halving the bytes pays in full. For comparison, fp32 at
 the same ceiling would be ~0.3 tok/s: the format is the difference
 between "unusable" and "usable-slow" on commodity x86.
 
+### Decode-step proxy: the roofline survives the real schedule
+
+`decode_step_bench.c` runs every GEMV a token actually costs -- the
+recorded 64-layer schedule (48 GDN + 16 attention layers at the
+recorded head geometry, FFN 5120<->17408, lm_head to vocab 248320; 321
+projections, 5.49 GiB of Q2_0 per token = 82% of the recorded model's
+weight bytes; the gap is GDN conv/gate small tensors, embeddings and
+norms) -- with the full per-projection pipeline: AVX2 quantize, AVX2
+permute, low-bit GEMV under one parallel region per token with
+work-stolen 128-row chunks. Weights are random bytes and the
+elementwise glue is not computed, so this is a weights-and-overhead
+ceiling for a real decode step, not a claim of one.
+
+| | best ms/token | tok/s | GB/s | region-per-GEMV instead |
+| :-- | --: | --: | --: | --: |
+| Q2_0 | 236.6 | **4.23** | 24.9 | 3.68 tok/s (-13%) |
+| Q1_0 | 133.4 | **7.50** | 22.1 | 6.76 tok/s (-10%) |
+
+**The isolated-kernel rooflines (4.2 / 7.8 tok/s) survive contact with
+the real shape schedule** -- 321 small-to-huge GEMVs with barriers
+between them, not one big streaming loop -- at t=8, no pinning. The
+last column re-measures the fork-join design rule end to end: opening
+a region per projection costs 10-13% of a token, in line with the
+microbenched prediction. Numbers are best-of-10 with ~10-15%
+run-to-run spread; this is a laptop that may have background DRAM
+contention, which lowers every number here equally.
+
 ## Building
 
 ```bash

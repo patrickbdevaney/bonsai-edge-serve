@@ -31,6 +31,7 @@ kernels/cpu-neon-arm/gemv_neon_bench
 kernels/cpu-avx-x86/gemv_avx_bench
 kernels/cpu-avx-x86/test_shapes
 kernels/cpu-avx-x86/token_overhead_bench
+kernels/cpu-avx-x86/decode_step_bench
 kernels/vulkan/*.spv
 kernels/vulkan/gemv_vk_bench
 kernels/vulkan/*_dot.spv

@@ -1,0 +1,37 @@
+== decode-step proxy, i9-14900HX, t=8, chunk=128, idle-ish machine ==
+
+decode-step proxy, Q2_0, 321 projections, 5.49 GiB weights/token (recorded model: 6.67 GiB)
+threads=8  region=per-token
+
+  token  0   275.57 ms
+  token  1   243.63 ms
+  token  2   236.64 ms
+  token  3   244.16 ms
+  token  4   250.96 ms
+  token  5   263.66 ms
+  token  6   237.64 ms
+  token  7   251.33 ms
+  token  8   251.30 ms
+  token  9   251.42 ms
+
+Q2_0 decode-step proxy: best 236.64 ms/token (4.23 tok/s), avg 250.63 ms (3.99 tok/s), 24.9 GB/s of weight bytes
+
+decode-step proxy, Q1_0, 321 projections, 2.75 GiB weights/token (recorded model: 3.80 GB)
+threads=8  region=per-token
+
+  token  0   166.89 ms
+  token  1   217.86 ms
+  token  2   162.00 ms
+  token  3   137.19 ms
+  token  4   135.83 ms
+  token  5   133.75 ms
+  token  6   137.82 ms
+  token  7   133.40 ms
+  token  8   137.49 ms
+  token  9   147.71 ms
+
+Q1_0 decode-step proxy: best 133.40 ms/token (7.50 tok/s), avg 150.99 ms (6.62 tok/s), 22.1 GB/s of weight bytes
+
+-- anti-pattern (region per projection), for the record --
+Q2_0 decode-step proxy: best 271.62 ms/token (3.68 tok/s), avg 284.42 ms (3.52 tok/s), 21.7 GB/s of weight bytes
+Q1_0 decode-step proxy: best 147.85 ms/token (6.76 tok/s), avg 176.57 ms (5.66 tok/s), 19.9 GB/s of weight bytes
