@@ -434,6 +434,35 @@ faster *by doing less work*, so "faster" is exactly what a broken one looks
 like. Pair every such change with an output-equality assertion against the
 unoptimised path -- here, four lines of gate.
 
+### L16. Elementwise relative error is the wrong gate for a dot product
+
+Extending the q2_0 kernel test from one shape to a 100-shape sweep produced
+14 failures, all at the largest K. The values looked like this:
+
+    gemm FAIL K=1280 nr=12 nc=64 at 188 (got 0.000014 ref 0.000014, rel 7.7e-03)
+
+`got` and `ref` print identically to six decimals and the check still fails.
+The cause is the metric, not the kernel: over signed data the terms of a long
+dot product cancel, so at K=1280 an output can land at 1e-5 while the
+individual products are O(1). Two implementations agreeing to ~1e-7 absolute
+then "disagree" by 1e-2 *relative* on that element.
+
+Normalising by `max|ref|` over the output -- error against the magnitude the
+computation actually produces, the standard GEMM criterion -- gives 100/100
+shapes passing at <=1.3e-07, with the elementwise figure still printed for
+information.
+
+**Generalizable:** a tolerance has to be relative to the scale of the
+computation, not the scale of the element. Where cancellation is possible,
+per-element relative error manufactures failures on arithmetic that is
+correct -- and a gate that cries wolf gets ignored when it is right (L2).
+
+The reason this was worth chasing rather than loosening: the first instinct
+was to widen the tolerance until it passed, which would have hidden a real
+bug just as effectively. Checking *what the failing numbers were* -- both
+near zero, absolute error ~1e-7 -- distinguished "the metric is wrong" from
+"the kernel is wrong" in one look.
+
 ### L15. A "CPU backend" benchmark that was partly a GPU benchmark
 
 Every CPU number in this repo was taken with `-ngl 0` on the CUDA build,

@@ -47,22 +47,62 @@ static ggml_half f2h(float f) {
     return (ggml_half)(sign | (exp << 10) | man);
 }
 
-static float maxrel(const float * a, const float * b, int n, int * where) {
-    float worst = 0.0f; *where = -1;
+// Error relative to the SCALE OF THE RESULT, not to each element.
+//
+// Elementwise relative error is the wrong metric for a dot product over
+// signed data: at large K the terms cancel, and an output can land near zero
+// while the individual products are O(1). Two implementations that agree to
+// 1e-9 absolute then "disagree" by 1e-2 relative on a value of 1e-5, and the
+// check fails on arithmetic that is fine. Normalising by max|ref| over the
+// output is the standard GEMM criterion and measures what matters: error
+// against the magnitude the computation actually produces.
+//
+// Both are reported, because the elementwise figure is still informative --
+// it just is not the pass/fail gate.
+static float maxrel(const float * a, const float * b, int n, int * where, float * elemwise) {
+    float worst_abs = 0.0f, scale = 0.0f, worst_elem = 0.0f;
+    *where = -1;
     for (int i = 0; i < n; i++) {
         const float d = fabsf(a[i] - b[i]);
+        scale = fmaxf(scale, fabsf(b[i]));
+        if (d > worst_abs) { worst_abs = d; *where = i; }
         const float s = fmaxf(fabsf(a[i]), fabsf(b[i]));
-        const float r = s > 1e-6f ? d / s : d;
-        if (r > worst) { worst = r; *where = i; }
+        if (s > 1e-6f) worst_elem = fmaxf(worst_elem, d / s);
     }
-    return worst;
+    if (elemwise) *elemwise = worst_elem;
+    return scale > 0.0f ? worst_abs / scale : worst_abs;
 }
 
+static int run_shape(int K, int NC, int NR, int quiet);
+
 int main(void) {
-    // K must be a multiple of QK2_0; NC a multiple of 4; NR a multiple of 4.
-    const int K  = 512;
-    const int NC = 32;
-    const int NR = 8;
+    int fail = 0;
+    // Shape sweep. The kernels index weights, activations and output with
+    // three different strides, and a single shape can satisfy all three by
+    // coincidence -- K=NC=NR=power-of-two especially. Vary each independently,
+    // including the minimum legal values (K=128 is one q2_0 block, NC=4 is one
+    // interleaved group, NR=4 is one i8mm tile), where an off-by-one in a loop
+    // bound has nowhere to hide.
+    const int Ks[]  = { 128, 256, 512, 1024, 1280 };
+    const int NCs[] = { 4, 8, 12, 32, 64 };
+    const int NRs[] = { 4, 8, 12, 32 };
+
+    printf("shape sweep (K x NC x NR):\n");
+    for (size_t a = 0; a < sizeof(Ks)/sizeof(*Ks); a++)
+        for (size_t b = 0; b < sizeof(NCs)/sizeof(*NCs); b++)
+            for (size_t c = 0; c < sizeof(NRs)/sizeof(*NRs); c++)
+                fail += run_shape(Ks[a], NCs[b], NRs[c], 1);
+    printf("  %d shapes, %d failed\n\n", (int)(sizeof(Ks)/sizeof(*Ks) *
+           sizeof(NCs)/sizeof(*NCs) * sizeof(NRs)/sizeof(*NRs)), fail);
+
+    printf("detail at K=512 nc=32 nr=8:\n");
+    fail += run_shape(512, 32, 8, 0);
+
+    printf(fail ? "\nRESULT: %d FAILED\n" : "\nRESULT: all passed\n", fail);
+    return fail != 0;
+}
+
+static int run_shape(int K, int NC, int NR, int quiet) {
     const int nb = K / QK2_0;
 
     block_q2_0x4 * B = calloc((size_t)(NC / 4) * nb, sizeof(block_q2_0x4));
@@ -90,10 +130,11 @@ int main(void) {
         float * ref = calloc(NC, sizeof(float));
         ggml_gemv_q2_0_4x8_q8_0        (K, got, 0, B, A, 1, NC);
         ggml_gemv_q2_0_4x8_q8_0_generic(K, ref, 0, B, A, 1, NC);
-        int w; const float e = maxrel(got, ref, NC, &w);
-        printf("  gemv q2_0 4x8   K=%d nc=%d   max rel err %.3e", K, NC, e);
-        if (e < 1e-4f) printf("   OK\n");
-        else { printf("   FAIL at %d (got %.6f ref %.6f)\n", w, got[w], ref[w]); fail++; }
+        int w; float ew; const float e = maxrel(got, ref, NC, &w, &ew);
+        if (!quiet) printf("  gemv q2_0 4x8   K=%d nc=%d   err/|ref|max %.3e (elemwise %.3e)", K, NC, e, ew);
+        if (e < 1e-4f) { if (!quiet) printf("   OK\n"); }
+        else { printf("  gemv FAIL K=%d nc=%d at %d (got %.6f ref %.6f, rel %.3e)\n",
+                      K, NC, w, got[w], ref[w], e); fail++; }
         free(got); free(ref);
     }
 
@@ -104,10 +145,11 @@ int main(void) {
         float * ref = calloc((size_t) NR * NC, sizeof(float));
         ggml_gemm_q2_0_4x8_q8_0        (K, got, bs, B, Am, NR, NC);
         ggml_gemm_q2_0_4x8_q8_0_generic(K, ref, bs, B, Am, NR, NC);
-        int w; const float e = maxrel(got, ref, (int)((size_t) NR * NC), &w);
-        printf("  gemm q2_0 4x8   K=%d nr=%d nc=%d   max rel err %.3e", K, NR, NC, e);
-        if (e < 1e-4f) printf("   OK\n");
-        else { printf("   FAIL at %d (got %.6f ref %.6f)\n", w, got[w], ref[w]); fail++; }
+        int w; float ew; const float e = maxrel(got, ref, (int)((size_t) NR * NC), &w, &ew);
+        if (!quiet) printf("  gemm q2_0 4x8   K=%d nr=%d nc=%d   err/|ref|max %.3e (elemwise %.3e)", K, NR, NC, e, ew);
+        if (e < 1e-4f) { if (!quiet) printf("   OK\n"); }
+        else { printf("  gemm FAIL K=%d nr=%d nc=%d at %d (got %.6f ref %.6f, rel %.3e)\n",
+                      K, NR, NC, w, got[w], ref[w], e); fail++; }
         free(got); free(ref);
     }
 
@@ -121,13 +163,13 @@ int main(void) {
         float * ref = calloc(NC, sizeof(float));
         ggml_gemv_q2_0_4x8_q8_0        (K, got, 0, B, A, 1, NC);
         ggml_gemv_q2_0_4x8_q8_0_generic(K, ref, 0, B, A, 1, NC);
-        int w; const float e = maxrel(got, ref, NC, &w);
-        printf("  gemv all-code-%d (w=%+d)      max rel err %.3e", code, code - 1, e);
-        if (e < 1e-4f) printf("   OK\n");
-        else { printf("   FAIL at %d (got %.6f ref %.6f)\n", w, got[w], ref[w]); fail++; }
+        int w; float ew; const float e = maxrel(got, ref, NC, &w, &ew);
+        if (!quiet) printf("  gemv all-code-%d (w=%+d)      err/|ref|max %.3e", code, code - 1, e);
+        if (e < 1e-4f) { if (!quiet) printf("   OK\n"); }
+        else { printf("  gemv all-code-%d FAIL K=%d at %d (rel %.3e)\n", code, K, w, e); fail++; }
         free(got); free(ref);
     }
 
-    printf(fail ? "\nRESULT: %d FAILED\n" : "\nRESULT: all passed\n", fail);
-    return fail != 0;
+    free(B); free(A); free(Am);
+    return fail;
 }
