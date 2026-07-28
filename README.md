@@ -134,8 +134,15 @@ cores, so differences are the backend's, not the device's.
 | CUDA | 1-bit | 19.03 | 18.98 | **33.24 (1.75x)** | **26.25 (1.38x)** |
 | Vulkan | ternary | 15.74 | 16.14 | 6.81 (0.43x) | 6.24 (0.39x) |
 | Vulkan | 1-bit | 19.57 | 19.60 | 8.20 (0.42x) | 6.43 (0.33x) |
-| CPU (NEON) | ternary | 2.22 | 2.15 | **2.37 (1.07x)** | 1.71 (0.79x) |
-| CPU (NEON) | 1-bit | 3.41 | 3.35 | 3.00 (0.88x) | 3.35 (1.00x) |
+| CPU (NEON) | ternary | 2.22† | 2.15† | **2.37 (1.07x)**† | 1.71 (0.79x)† |
+| CPU (NEON) | 1-bit | 3.41† | 3.35† | 3.00 (0.88x)† | 3.35 (1.00x)† |
+
+† **The CPU rows are superseded.** They were measured at `-ngl 0` on the CUDA
+build, where the CUDA pinned-host buffer type outranks the repack buffer
+types, so the ARM repack kernels never ran and part of prefill was executed on
+the GPU. Re-measured CPU-only with the repack path reachable and the new Q2_0
+ARM kernels: **ternary native 5.19 code / 5.14 prose**, DSpark 4.95 (0.95x) /
+2.49 (0.48x). See `results/cpu-repack.txt` and `results/spec-round-cost.txt`.
 
 <!-- sources: Vulkan/1-bit dspark from '.mmvq' results; Vulkan/1-bit native from '.mmvq' results; Vulkan/ternary dspark from '.mmvq' results; Vulkan/ternary native from '.mmvq' results -->
 
@@ -153,6 +160,26 @@ acceptance stay comparable. Full table with TTFT, prefill and acceptance:
 **Speculation pays off on exactly one of the three backends.** CUDA
 1.37-1.75x, Vulkan 0.33-0.43x, CPU 0.79-1.07x. Same weights, same
 drafter, same box.
+
+**That is now explained by one constant per backend.** A speculative round
+yields `1 + block_size*alpha` tokens and costs `R` plain decode steps, so
+breakeven is `alpha* = (R-1)/block_size`. Measuring R independently on
+prompts whose acceptance differs 3x gives the same value each time:
+
+| Backend | R (decode steps per round) | breakeven `alpha*` | verdict |
+| :-- | --: | --: | :-- |
+| CUDA | 2.18 | **0.296** | wide margin -- 1.49-1.80x measured |
+| CPU (NEON) | ~4.9 | ~0.97 | effectively never; 95.0% acceptance still gives 0.95x |
+| Vulkan | ~7.3 | **~1.57** | **cannot win at any acceptance rate** |
+
+Vulkan's breakeven exceeds 1.0, so no drafter, workload or tuning can make
+speculation profitable there -- a perfect drafter would still yield 5 tokens
+for 7.3 steps of work. Acceptance is identical across backends (it is a
+property of the model and prompt); **R is the property of the hardware**, and
+it is what decides. Speculation is a bet that widening the batch is cheap, so
+the more efficiently a backend already uses the device at batch 1, the worse
+the bet -- which is why the *slowest* backend here has the second-worst R.
+See `results/spec-round-cost.txt`.
 
 **Vulkan native has closed the gap to CUDA, and the 1-bit build passes
 it.** The Vulkan rows moved after the integer-dot MMVQ path was

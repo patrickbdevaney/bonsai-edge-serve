@@ -1,0 +1,113 @@
+One number per backend explains all of speculative decoding on this box
+========================================================================
+
+This repo has carried an empirical finding since Milestone 0: "speculation
+pays on exactly one of three backends" -- CUDA 1.37-1.75x, CPU 0.79-1.07x,
+Vulkan 0.33-0.43x. Same weights, same drafter, same box. It was observed and
+never explained.
+
+It is now explained, and the explanation is a single constant per backend.
+
+THE MODEL
+---------
+A speculative round yields (1 + block_size * alpha) tokens and costs some
+number R of plain autoregressive decode steps. So
+
+    speedup = (1 + block_size * alpha) / R
+    breakeven:  1 + block_size * alpha = R   ->   alpha* = (R - 1) / block_size
+
+R is measured, not assumed: R = tokens_per_round / speedup, computed
+independently on every run. If R is a property of the backend, the same value
+must fall out of prompts with very different acceptance.
+
+MEASURED (ternary Q2_0, block_size 4, greedy, in-process DSpark)
+-----------------------------------------------------------------
+  backend / prompt   native   spec   tok/round   speedup      R    alpha*
+  CUDA (10 runs)      16.7   varies    varies     varies    2.18    0.296
+  Vulkan code        14.02    9.41      4.80       0.671    7.15    1.538
+  Vulkan prose       15.22    4.70      2.29       0.309    7.42    1.604
+  CPU code            5.19    4.95      4.80       0.954    5.03    1.008
+  CPU prose           5.14    2.49      2.29       0.484    4.73    0.932
+
+Two prompts whose acceptance differs by 3x (alpha 0.950 vs 0.321) and whose
+measured speedups differ by 2x produce the same R on each backend, to within
+4% on Vulkan and 6% on CPU. On CUDA the same constant held across ten runs
+spanning a 2.3x range of speedups (2.136-2.219). The model holds.
+
+  CUDA      R = 2.18    alpha* = 0.296
+  CPU       R ~ 4.9     alpha* ~ 0.97
+  Vulkan    R ~ 7.3     alpha* ~ 1.57
+
+WHAT THIS SAYS
+--------------
+**Vulkan's alpha* exceeds 1.0, so speculation there cannot win at any
+acceptance rate whatsoever.** Not "loses on our workloads" -- cannot win. A
+perfect drafter accepting every token would still produce 5 tokens per round
+at a cost of 7.3 steps. That is the whole of the repo's Vulkan speculation
+finding, in one number, and it means no tuning, drafter swap or workload
+change will rescue it. The correct action is the one the policy layer already
+takes: refuse to speculate on Vulkan, and say why.
+
+**CPU's alpha* ~ 0.97 means it effectively never wins either.** The code
+prompt here accepts 95.0% of draft tokens -- extraordinarily high, better than
+anything measured on CUDA -- and still comes out at 0.954x. Needing 97%
+acceptance to break even is not a threshold any real workload clears. The old
+table's CPU rows (1.07x on one cell) are within noise of exactly this.
+
+**Only CUDA has room.** alpha* = 0.296 against typical acceptance of
+0.43-0.91 is a wide margin, which is why CUDA measures 1.49-1.80x.
+
+Acceptance is identical across backends, as it must be: alpha 0.950 and
+tokens_per_round 4.80 came back byte-identical from the CPU and Vulkan runs
+on the same prompt. Acceptance is a property of the model, drafter and
+prompt. **R is the property of the hardware.** Separating them is what makes
+a single measurement per backend predictive instead of anecdotal.
+
+WHY R DIFFERS SO MUCH
+----------------------
+A speculative round costs one target forward pass over (1 + block) rows plus
+one drafter pass. What varies is how much a 5-row batch costs relative to a
+1-row batch:
+
+  * CUDA at batch 1 is latency-bound, not bandwidth-bound. Widening to 5 rows
+    is nearly free, so R stays near 2 -- roughly "the drafter pass plus a bit".
+  * CPU decode is already using all 12 threads on a 1-row matmul. A 5-row
+    batch is close to 5x the arithmetic with no spare parallelism to hide it,
+    and the drafter is a second model on the same cores. R ~ 4.9.
+  * Vulkan pays per-dispatch overhead the repo measured earlier, and the
+    drafter's own dispatches are not amortised by anything. R ~ 7.3.
+
+The general shape: **speculation is a bet that widening the batch is cheap.
+The more efficiently a backend already uses the device at batch 1, the worse
+that bet gets.** A backend being slow does not make speculation profitable --
+CPU is the slowest of the three and has the second-worst R.
+
+METHOD NOTE: THE FIRST REQUEST ON VULKAN IS NOT A MEASUREMENT
+---------------------------------------------------------------
+The first Vulkan DSpark run measured 3.53 tok/s on the code prompt, with a
+prefill of 2.32 tok/s against native's 111.73. Taken at face value it gives
+R = 19.1 for code against 8.3 for prose -- the model appearing to break.
+
+It was warmup. With one discarded warmup pass the same server measures 9.57
+then 9.41 tok/s across two consecutive passes, and R lands at 7.15 vs 7.42 --
+consistent. The unwarmed number was off by 2.7x.
+
+The tell was not the decode number, which looked merely bad; it was the
+prefill number, which was absurd. A figure that cannot be true is more useful
+than one that is merely disappointing, and this is the second time in this
+repo a first-run artifact has produced a plausible wrong answer (see the
+bandwidth probe's first-row artifact).
+
+HOW TO REPRODUCE
+----------------
+  # CPU (hide the GPU -- see results/cpu-repack.txt for why)
+  CUDA_VISIBLE_DEVICES="" ./build/bonsai-server -m <Q2_0> -md <dspark> \
+      --backend cpu --speculate on -ngl 0 -t 12 -c 512 --port 8103
+
+  # Vulkan (build against build-vulkan2; discard the first request)
+  OUT=build/bonsai-server-vk BUILD_DIR=build-vulkan2 ./server/build.sh
+  ./build/bonsai-server-vk -m <Q2_0> -md <dspark> --backend vulkan \
+      --speculate on -c 512 --port 8107
+
+Per-request `bonsai.spec` reports alpha and tokens_per_round; R follows from
+those and the native baseline measured in the same harness.

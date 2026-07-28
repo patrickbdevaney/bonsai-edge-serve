@@ -75,6 +75,33 @@ struct Policy {
     std::vector<std::string> reasons;
 };
 
+// Why a backend wins or loses at speculation, in one number.
+//
+// A speculative round yields (1 + block_size*alpha) tokens and costs R plain
+// decode steps, so breakeven is alpha* = (R-1)/block_size. R is a property of
+// the HARDWARE -- acceptance is a property of the model and prompt, and comes
+// back identical on every backend. Measured on prompts whose acceptance
+// differs 3x, R agrees to within 4-6%. See results/spec-round-cost.txt.
+inline const char * round_cost_reason(Backend b) {
+    switch (b) {
+        case Backend::CUDA:
+            return "round cost R = 2.18 decode steps -> breakeven acceptance "
+                   "alpha* = 0.296; typical acceptance is 0.43-0.91, so there "
+                   "is a wide margin";
+        case Backend::VULKAN:
+            // The strong form: this is not "loses on our workloads".
+            return "round cost R = 7.3 decode steps -> breakeven alpha* = 1.57, "
+                   "which EXCEEDS 1.0: even a drafter accepting every token "
+                   "would yield 5 tokens for 7.3 steps of work. Speculation "
+                   "cannot win here at any acceptance rate";
+        case Backend::CPU:
+        default:
+            return "round cost R = 4.9 decode steps -> breakeven alpha* = 0.97; "
+                   "a measured 95.0% acceptance still returned 0.95x, so this "
+                   "effectively never wins";
+    }
+}
+
 // `speculate`: "auto" | "on" | "off".
 inline Policy resolve(Backend backend,
                       const std::string & variant,
@@ -106,6 +133,7 @@ inline Policy resolve(Backend backend,
                      backend_name(backend), variant.c_str());
         }
         p.reasons.push_back(buf);
+        p.reasons.push_back(round_cost_reason(backend));
     } else {
         p.speculate = (speculate == "on");
         if (p.speculate && gain > 0.0f && gain <= 1.05f) {

@@ -47,6 +47,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
 | W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
 | W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | `f738f35` |
+| W33 | **All three backends' speculation behaviour reduced to one constant each** | R = 2.18 (CUDA) / ~4.9 (CPU) / ~7.3 (Vulkan); Vulkan's breakeven alpha* ~1.57 > 1, so it can never win | pending |
 | W32 | **Q2_0 ARM NEON repack kernels shipped** | CPU-only prefill 4.04 -> 15.76 tok/s (**3.90x**), decode 3.28 -> 5.08 (1.55x); validated vs ggml's own generic, greedy output character-identical | `fe3fdbe` |
 | W31 | **Found every CPU number in this repo was the wrong path** | CUDA host buft outranks repack even at `-ngl 0`; 1-bit CPU decode is 6.80 tok/s, not 4.85 (+40%) | `efff926` |
 
@@ -1082,6 +1083,47 @@ The generalisable part: **when two hypotheses predict the same
 observation, the cheap move is to find a case where only one of them
 predicts anything.** Here that was "run the suspect mechanism with the
 suspect component removed" -- concurrency without speculation.
+
+### S10. R is a property of the hardware; alpha is a property of the model
+
+S9 established that a speculative round costs a fixed number R of plain
+decode steps on CUDA (2.18) regardless of acceptance. Measuring the same
+constant on the other two backends turns the repo's oldest empirical
+finding -- "speculation pays on exactly one of three backends" -- into a
+closed-form statement.
+
+| Backend | R | alpha* = (R-1)/4 | verdict |
+| :-- | --: | --: | :-- |
+| CUDA | 2.18 | 0.296 | wide margin; 1.49-1.80x |
+| CPU (NEON) | ~4.9 | ~0.97 | effectively never |
+| Vulkan | ~7.3 | ~1.57 | **impossible at any alpha** |
+
+Each R came from two prompts whose acceptance differs 3x (0.950 vs 0.321)
+and whose speedups differ 2x, agreeing to within 4-6%. The constant is
+real.
+
+**Vulkan's alpha* exceeds 1.0.** A perfect drafter accepting every token
+would still yield 5 tokens for 7.3 steps of work. So no drafter swap, no
+workload change and no tuning can make speculation profitable on Vulkan --
+which converts S2's empirical "DSpark is a net loss on Vulkan, on every
+configuration" into a statement with a reason attached.
+
+**CPU's alpha* ~0.97 means the same in practice.** The code prompt accepts
+95.0% -- better than anything measured on CUDA -- and still returns 0.954x.
+
+Acceptance came back byte-identical across backends (alpha 0.950,
+tokens_per_round 4.80 on CPU and Vulkan for the same prompt), as it must:
+it is a property of model, drafter and prompt. **R is the property of the
+hardware.** Separating the two is what makes one measurement per backend
+predictive rather than anecdotal.
+
+Why R varies: speculation is a bet that widening the batch from 1 row to
+(1+block) rows is cheap. CUDA at batch 1 is latency-bound, so the extra
+rows are nearly free. CPU already saturates 12 threads on a 1-row matmul,
+so 5 rows is ~5x the arithmetic with nothing to hide it. Vulkan pays
+per-dispatch overhead on top. **The more efficiently a backend already
+uses the device at batch 1, the worse the bet** -- which is why the
+slowest backend of the three has the second-worst R, not the best.
 
 ### S9. The round-cost constant, not acceptance, is what to serve by
 
