@@ -31,8 +31,8 @@ hardware backs it. Everything else lives under Open Questions.
 | W12 | Shape-adaptive kernel selection rule | v7 <32MB (L2), v5 >32MB (streaming) | `3f8c4e2` |
 | W13 | Four candidate optimizations tested and rejected on evidence | uint4 loads, row-blocking (streaming), split-K, `n_rs_seq=0` | various |
 | W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `a47598b` |
-| W15 | **Vulkan q1_0 MMVQ + multiply bit-spread** | tg128 **15.39 -> 19.03 tok/s (+23.7%)**; matches CUDA's 19.03 on this model | `pending` |
-| W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `pending` |
+| W15 | **Vulkan q1_0 MMVQ + multiply bit-spread** | tg128 **15.39 -> 19.03 tok/s (+23.7%)**; matches CUDA's 19.03 on this model | `ae75cd9` |
+| W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `ae75cd9` |
 
 ---
 
