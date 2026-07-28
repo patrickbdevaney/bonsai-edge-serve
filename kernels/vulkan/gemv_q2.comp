@@ -63,6 +63,12 @@ int dot4(uint c, uint a, int acc) {
 }
 
 // Build four consecutive 2-bit codes from byte p of a GGUF-order word.
+#ifdef ALU_PROBE
+// ALU PROBE: numerically WRONG on purpose. Keeps the load and the four
+// dot4 calls, removes the extraction arithmetic, to separate "this kernel
+// is memory-bound" from "this kernel is extraction-bound".
+uint unpack_gguf(uint w, uint p) { return w + p; }
+#else
 uint unpack_gguf(uint w, uint p) {
     const uint c4 = (w >> (8u * p)) & 0xFFu;
     return  (c4        & 3u)
@@ -70,6 +76,7 @@ uint unpack_gguf(uint w, uint p) {
          | (((c4 >> 4) & 3u) << 16)
          | (((c4 >> 6) & 3u) << 24);
 }
+#endif
 
 #define LANES 32
 #define TEAMS 8

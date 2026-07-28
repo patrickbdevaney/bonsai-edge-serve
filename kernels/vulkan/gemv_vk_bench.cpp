@@ -289,6 +289,7 @@ int main(int argc, char **argv) {
         {"q2 int-dot",         "gemv_q2_dot.spv",  0, true},
         {"q2 int-dot GGUF-ord","gemv_q2_gguf.spv", 1, true},
         {"q2 GGUF-ord WIDE4",   "gemv_q2_wide4.spv", 1, true},
+        {"q2 ALU PROBE (wrong)", "gemv_q2_alu.spv",   1, true},
         {"q1 portable",        "gemv_q1.spv",      2, false},
         {"q1 int-dot",         "gemv_q1_dot.spv",  2, false},
     };

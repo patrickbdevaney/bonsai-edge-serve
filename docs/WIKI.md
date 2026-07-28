@@ -179,13 +179,33 @@ methodological point:
   run, and it is the same class of error as L4 (measuring while a build
   ran) and the interleaving lesson from W15.
 
-And a hypothesis that did NOT survive: restructuring the GEMV so each lane
-reads four consecutive words should capture the difference. It does not --
-130.3 GB/s lane-strided vs 105.0 interleaved and 110.2 with the four loads
-grouped back-to-back. Both WIDE4 variants are numerically correct and both
-are slower. So the headroom is proven to exist and the obvious way of
-reaching it fails; likely suspects (untested) are register pressure from the
-staging array and the interleaving of several weight streams.
+**CORRECTION -- wide loads do win; the first test was at the wrong shape.**
+Restructuring the GEMV so each lane reads four consecutive words measured
+SLOWER at K=5120 N=17408 (130.3 baseline vs 110.2 grouped), and that was
+recorded here as the hypothesis failing. Those weights are 21.2 MiB against
+a 32 MB L2, so the benchmark was L2-resident rather than streaming -- and
+because the cases share buffers, the same case swung between 75.7 and 203.0
+GB/s across runs purely on which case had already warmed L2. **This repo
+documented that exact trap in K2c and I walked into it anyway.**
+
+Re-measured at streaming footprints the variable turns out to be K:
+
+| K | baseline | WIDE4 | |
+| --: | --: | --: | :-- |
+| 5120 | 116.9-120.9 | 113.2-115.4 | loses |
+| 8192 | 113.6-115.4 | 138.3-140.1 | **+21-22%** |
+| 17408 | 89.7-90.8 | 130.1-133.5 | **+43-49%** |
+
+`nw = K/16` words per row, and the loop advances by LANES*4 = 128: at
+K=5120 that is 2.5 iterations per lane and the ragged tail swamps the win;
+at K=17408 it is 8.5 and the merge pays. Same shape-adaptive shape as W12 --
+wide loads for large K, lane-strided for small K.
+
+**Two habits this should install.** Always state the weight footprint
+against L2 when quoting a kernel number -- an unqualified GB/s figure is not
+interpretable. And never benchmark variants that share a weight buffer
+without either sizing past L2 or rotating the order, because the second case
+measures the first case's cache.
 
 Worth stating plainly what this leaves: **+38% is available on the Vulkan
 GEMV without changing the access pattern at all** (130 -> 180, the

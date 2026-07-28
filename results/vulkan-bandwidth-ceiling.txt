@@ -69,25 +69,46 @@ Two things this rules out, both worth recording because both were plausible:
   than DEVICE_LOCAL, which is false. One reversed run costs nothing and
   settles it.
 
-AND A HYPOTHESIS THAT DID NOT SURVIVE CONTACT
-----------------------------------------------
-If wide loads are worth 245 vs 180, restructuring the GEMV so each lane
-reads four consecutive words should capture it. It does not:
+WIDE LOADS DO WIN -- THE FIRST TEST WAS AT THE WRONG SHAPE (CORRECTION)
+-----------------------------------------------------------------------
+First attempt: restructure the GEMV so each lane reads four consecutive
+words. Measured at K=5120 N=17408 it was SLOWER -- 130.3 GB/s baseline vs
+105.0 interleaved and 110.2 grouped -- and this file originally recorded
+that as "the hypothesis did not survive."
 
-  q2 int-dot GGUF-order (lane-strided)   130.3 GB/s
-  q2 GGUF-order WIDE4, loads interleaved 105.0 GB/s
-  q2 GGUF-order WIDE4, loads grouped     110.2 GB/s
+**That measurement was worthless.** Those weights are 21.2 MiB and Thor's L2
+is 32 MB, so the benchmark was L2-resident, not streaming. Worse, the cases
+share buffers, so whichever case ran second read weights the first case had
+just pulled into L2: the same "q2 int-dot" case swung between 75.7 and 203.0
+GB/s across runs purely on ordering. This repo already documented that trap
+(K2c, results/gemv-cuda-shapes.txt) and it was walked into anyway.
 
-Both WIDE4 variants are numerically correct (1.49e-05 against the CPU
-reference) and both are SLOWER. Grouping the four loads back-to-back before
-consuming any of them -- which is what the probe does -- recovers 5 points
-and still loses to the original by 15%.
+Re-measured at genuinely streaming footprints, WIDE4 wins, and the variable
+is K -- not the footprint:
 
-So the headroom is real and proven to exist, and the naive way of reaching
-it does not work. Likely suspects, none tested: register pressure from the
-ROWS x 4 staging array cutting occupancy; the interleaving of ROWS
-independent weight streams; the activation and scale loads breaking up the
-merge window.
+  K       N        MiB    baseline   WIDE4     delta
+  5120    65536     80     120.9     113.2     -6%
+  5120   131072    160     116.9     115.4     -1%
+  8192    65536    128     113.6     138.3    +22%
+  8192   131072    256     115.4     140.1    +21%
+  17408   32768    136      90.8     130.1    +43%
+  17408   65536    272      89.7     133.5    +49%
+
+All validate against the CPU reference (1.6e-06 to 4.8e-06).
+
+The threshold is words-per-row: `nw = K/16`, and the loop advances by
+LANES*4 = 128 words. At K=5120, nw=320, so each lane runs 2.5 iterations and
+the ragged tail plus loop overhead swamp the wider loads. At K=17408,
+nw=1088 gives 8.5 iterations and the merge pays.
+
+So this is the same shape-adaptive conclusion as W12, in a new place:
+**wide loads for large K, lane-strided for small K.**
+
+What it is worth on Bonsai specifically is partial. The real decode shapes
+are mostly K=5120 (the output head m=248320, and m=17408/12288/10240/6144),
+where WIDE4 does nothing; the K=17408 FFN-down projection is the one that
+gains, and it is also currently the slowest ggml shape at 89.7-90.8 GB/s in
+our harness. A shape-adaptive kernel captures that piece and not the rest.
 
 WHERE THIS LEAVES THE NUMBERS
 ------------------------------
