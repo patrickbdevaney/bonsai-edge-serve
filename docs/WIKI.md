@@ -36,7 +36,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `92d3886` |
 | W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `92d3886` |
 | W19 | **Pure-C++ single-binary OpenAI server** (`bonsai-server`) | 20/20 smoke gate; policy, reasoning split, streaming, web UI, terminal client | `5e72084` |
-| W20 | **Located the Vulkan 2x gap: load width, not bandwidth** | Vulkan reaches 245-250 GB/s (= CUDA) with wide loads, 180 lane-strided; our GEMV is at 130 | `pending` |
+| W20 | **Located the Vulkan 2x gap: load width, not bandwidth** | Vulkan reaches 245-250 GB/s (= CUDA) with wide loads, 180 lane-strided; our GEMV is at 130 | `ea555c2` |
 
 ---
 
