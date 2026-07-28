@@ -498,6 +498,15 @@ OS is worth **1.73x (ternary) and 2.27x (1-bit)**:
 | **12** | **3.18** | **4.85** |
 | 14 (default) | 1.84 | 2.14 |
 
+> **These CPU figures are the non-repack path and understate 1-bit.** They
+> were taken with `-ngl 0` on the CUDA build, where the CUDA pinned-host
+> buffer type outranks the repack buffer types in `make_cpu_buft_list`, so
+> the ARM repack kernels Q1_0 *does* have were never selected. Hiding the
+> GPU (`CUDA_VISIBLE_DEVICES=""`) takes 1-bit decode to **6.80 tok/s** and
+> prefill from 11.89 to **20.16**. `-ngl 0` bounds where the weights live,
+> not where the ops run. The thread-count ratio above is unaffected.
+> See `results/cpu-repack.txt`.
+
 Fixed: the CPU path now defaults to 12 threads. The Milestone 0 CPU rows
 above used the default and therefore understate that backend.
 

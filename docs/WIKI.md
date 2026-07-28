@@ -47,6 +47,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
 | W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
 | W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | `f738f35` |
+| W31 | **Found every CPU number in this repo was the wrong path** | CUDA host buft outranks repack even at `-ngl 0`; 1-bit CPU decode is 6.80 tok/s, not 4.85 (+40%) | pending |
 
 ---
 
@@ -430,6 +431,49 @@ not a win. Caching, reordering and reuse optimisations all make things
 faster *by doing less work*, so "faster" is exactly what a broken one looks
 like. Pair every such change with an output-equality assertion against the
 unoptimised path -- here, four lines of gate.
+
+### L15. A "CPU backend" benchmark that was partly a GPU benchmark
+
+Every CPU number in this repo was taken with `-ngl 0` on the CUDA build,
+because `reference/serve_reference.sh` falls back to `build/bin` when no
+`build-cpu` exists. Two things were wrong with that, and neither showed up
+as an error:
+
+**1. The repack path was unreachable.** `make_cpu_buft_list`
+(src/llama-model.cpp:866) orders buffer types as ACCEL, then the first
+device's HOST buffer type, then extra buffer types (repack), then plain
+CPU. `select_weight_buft` takes the first that supports the weight, so on
+a CUDA-enabled build the CUDA pinned-host buffer always outranks repack --
+**at `-ngl 0`, and with `--no-mmap`**. Q1_0 has ARM repack kernels and
+never used them. Measured properly (`CUDA_VISIBLE_DEVICES=""`), Q1_0 CPU
+decode is **6.80 tok/s, not the 4.85 recorded** -- 40% faster for free.
+
+**2. `-ngl 0` bounds where the WEIGHTS live, not where the OPS run.** With
+weights in a host buffer, ggml offloads large prefill matmuls to the GPU.
+That made a repack A/B report pp64 = 150.94 for the control against 18.43
+for repack -- repack looking 8x *slower* on prefill. Removing the CUDA
+device entirely puts both arms on the CPU and reverses the sign: 20.16 vs
+11.89, repack **+70%**.
+
+**3. The A/B that started it measured nothing.** First run:
+
+  repack ON   tg16 5.13    repack OFF  tg16 5.03
+
+"Repack does nothing" -- except an `fprintf` at the top of the selector
+printed on *neither* run. Both arms had repack off. Same shape as L14: the
+feature was never reached, and the null result read as a verdict on the
+feature.
+
+**Generalizable:** before benchmarking a backend, assert the backend is the
+only thing that could be running. A device the process can merely *see* is
+enough to change which buffer types, and which kernels, are selected.
+
+And a fourth, about the estimate that motivated the whole thing: the
+"~1.9x" prize came from comparing our NEON kernel against a **scalar**
+reference in our own microbenchmark, while ggml already ships a NEON
+`ggml_vec_dot_q2_0_q8_0` that is what actually runs. Benchmarking against
+a reference implementation nobody executes measures the reference, not the
+opportunity.
 
 ### L14. Ask what the device SELECTS before verifying what the feature needs
 

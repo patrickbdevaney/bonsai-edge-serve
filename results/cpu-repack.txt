@@ -1,0 +1,137 @@
+CPU repack: it never engaged, every CPU number in this repo was the slow path
+==============================================================================
+
+This started as "wire the NEON Q2_0 kernel into ggml, worth ~1.9x". Both
+halves of that turned out to be wrong, and the reason is worth more than the
+kernel would have been.
+
+WRONG THING 1: THE BASELINE WAS NOT SCALAR
+--------------------------------------------
+The ~1.9x estimate came from `kernels/cpu-neon-arm/gemv_neon_bench.c`, which
+measures our NEON kernel at 5.78 GB/s against a **scalar** reference at
+0.37 GB/s. But ggml already ships a NEON `ggml_vec_dot_q2_0_q8_0`
+(arch/arm/quants.c:310, tbl-replicate + variable-shift unpack), and that is
+what the CPU backend actually runs. The real comparison was never
+scalar-vs-NEON; it was per-row NEON vs 4-row-interleaved repack.
+
+Comparing a new kernel against a reference implementation nobody runs
+measures the reference, not the opportunity.
+
+WRONG THING 2: THE REPACK PATH NEVER RAN AT ALL
+-------------------------------------------------
+Q1_0 already HAS ARM repack kernels in the fork; Q2_0 has only AVX512-VNNI.
+So the obvious experiment was to switch Q1_0's off and see what repack is
+worth -- if it is worth a lot, writing the Q2_0 NEON kernels is justified.
+
+First run of that A/B:
+
+  Q1_0 repack ON   tg16 5.13 +/- 0.01     pp64 152.78 +/- 17.21
+  Q1_0 repack OFF  tg16 5.03 +/- 0.06     pp64 152.84 +/- 23.06
+
+Reads as "repack does nothing". It was measuring nothing: **both arms had
+repack off.** An `fprintf` at the top of `ggml_repack_get_optimal_repack_type`
+printed on neither run -- the selector is never called with any type.
+
+The cause is in `make_cpu_buft_list` (src/llama-model.cpp:866). The buffer
+type list is built in order:
+
+  1. ACCEL buffer types
+  2. the first device's HOST buffer type      <-- CUDA pinned memory
+  3. extra buffer types                        <-- repack lives here
+  4. plain CPU
+
+`select_weight_buft` takes the first entry that supports the weight. On a
+CUDA-enabled build the CUDA host buffer type is at (2) and always wins, so
+(3) is never reached -- **even at `-ngl 0`, and even with `--no-mmap`.**
+`--no-host 1` skips (2) and repack engages immediately.
+
+CONSEQUENCE: EVERY CPU NUMBER IN THIS REPO IS THE NON-REPACK PATH
+------------------------------------------------------------------
+`reference/serve_reference.sh` prefers `$FORK_DIR/build-cpu/bin/llama-server`
+and falls back to `build/bin/llama-server`. There is no `build-cpu` on this
+box, so every CPU measurement was taken on the CUDA build -- with the host
+buffer type silently outranking repack. The recorded figures
+(ternary 3.18, 1-bit 4.85 tok/s) are the slow path for Q1_0.
+
+MEASURED PROPERLY (CUDA_VISIBLE_DEVICES="", -ngl 0, -t 12, r=3)
+-----------------------------------------------------------------
+  Q1_0            pp64            tg16
+  repack ON      20.16 +/- 0.38   6.80 +/- 0.06
+  repack OFF     11.89 +/- 0.01   5.31 +/- 0.04
+  gain           +70%             +28%
+
+  Q2_0 (no ARM repack path exists at all)
+                  4.04 +/- 0.00   3.40 +/- 0.03
+
+So repack is worth +70% prefill and +28% decode on this core -- real, but
+nothing like 1.9x. And 1-bit CPU decode is 6.80 tok/s, not the 4.85 this repo
+has been quoting: **40% faster than recorded, for free, by not putting a GPU
+in the process.**
+
+A TRAP INSIDE THE TRAP
+-----------------------
+With CUDA present and `--no-host 1`, the control (repack off) measured
+pp64 = 150.94 against repack's 18.43, i.e. repack looked 8x SLOWER on
+prefill. That is not a repack result: with weights in a host buffer ggml
+offloads the large prefill matmuls to the GPU, so the "CPU baseline" was
+partly a GPU number. Removing the CUDA device entirely puts both arms on the
+CPU and reverses the sign (20.16 vs 11.89).
+
+A "CPU backend" benchmark run in a process that can see a GPU is not
+necessarily measuring the CPU. `-ngl 0` bounds where the WEIGHTS live, not
+where the OPS run.
+
+WHY Q2_0 PREFILL IS DISPROPORTIONATELY BAD
+--------------------------------------------
+Q2_0 is 1.89x the bytes of Q1_0, and its decode is 1.56x slower
+(3.40 vs 5.31) -- roughly what bandwidth predicts. But its prefill is 2.9x
+slower (4.04 vs 11.89), and at 4.04 tok/s prefill is barely faster than its
+own decode, which is pathological.
+
+Decode is bandwidth-bound, so the size ratio dominates. Prefill is
+compute-bound, so the UNPACK cost dominates, and Q2_0's tbl-replicate +
+per-lane variable shift is several ops per 16 weights where Q1_0 does a
+single 64-bit table lookup per 8. That is the gap a repack kernel would
+close, and it is why the prefill prize for Q2_0 is plausibly larger than the
++70% measured on Q1_0.
+
+STATUS: NOT IMPLEMENTED, AND WHY
+----------------------------------
+The Q2_0 ARM kernels are NOT written. Enabling the Q2_0 repack buffer type
+switches BOTH gemv and gemm, so shipping only the gemv would route prefill
+through `ggml_gemm_q2_0_4x8_q8_0_generic` (scalar) and regress prefill badly.
+Both are needed or neither, and the gemm additionally needs the interleaved
+`block_q8_0x4` activation layout. Landing half of it would leave exactly the
+half-integrated, unverified state this repo keeps catching in others' work.
+
+The design for the gemv is settled and worth recording, because the obvious
+approach does not work. Our standalone kernel gets its speed from a
+whole-vector `AND`/`SHIFT` unpack, which requires the ACTIVATIONS to be
+pre-permuted 4-ways (lane i of the unpack corresponds to activation 4b+i).
+ggml's gemv hands you plain `block_q8_0` in natural order and does not let
+you permute it. The resolution is `vld4_s8`, which deinterleaves 32 int8
+activations by 4 in one instruction -- exactly the pattern the 2-bit lanes
+need -- so the EXISTING repack layout (`qs + k*32 + j*8`) can stay unchanged:
+
+  int8x8x4_t y  = vld4_s8(a_blk->qs);   // y.val[i] = a[i], a[i+4], ...
+  uint8x16_t v  = vld1q_u8(qs + k*32);  // rows 0,1
+  acc = vdotq_s32(acc, v & 3,          dup(y.val[0]));
+  acc = vdotq_s32(acc, (v >> 2) & 3,   dup(y.val[1]));
+  acc = vdotq_s32(acc, (v >> 4) & 3,   dup(y.val[2]));
+  acc = vdotq_s32(acc, v >> 6,         dup(y.val[3]));
+  // vpaddq_s32 pairs -> one int32 per row; subtract the activation sum once
+  // (codes are {0,1,2,3} biased by -1, so sum(w*a) = sum(c*a) - sum(a))
+
+EXPERIMENT HOOKS (patches/0004)
+--------------------------------
+  BONSAI_NO_ARM_REPACK=1   force Q1_0's ARM repack off (the A/B control)
+  BONSAI_REPACK_DEBUG=1    print every type the repack selector is offered,
+                           and whether Q1_0 engaged -- this is what caught
+                           the vacuous A/B
+
+HOW TO MEASURE THE CPU BACKEND CORRECTLY ON THIS BOX
+------------------------------------------------------
+  CUDA_VISIBLE_DEVICES="" llama-bench -ngl 0 -t 12 ...
+
+or a genuine CPU-only build, or `--no-host 1`. Without one of those, the
+repack path is unreachable and part of prefill runs on the GPU.

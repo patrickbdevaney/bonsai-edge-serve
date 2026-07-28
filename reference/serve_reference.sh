@@ -77,6 +77,23 @@ case "$ENGINE" in
                 BIN="$FORK_DIR/build-cpu/bin/llama-server"
                 [ -x "$BIN" ] || BIN="$FORK_DIR/build/bin/llama-server"
                 NGL=0
+                # -ngl 0 bounds where the WEIGHTS live, not where the OPS run,
+                # and it does NOT give you the CPU backend's real behaviour if
+                # the process can see a GPU:
+                #
+                #   * make_cpu_buft_list orders bufts as ACCEL, HOST, EXTRA,
+                #     CPU. On a CUDA build the CUDA pinned-host buffer outranks
+                #     the EXTRA (repack) buffers, so the ARM repack kernels are
+                #     unreachable -- Q1_0 has them and never used them.
+                #   * with weights in a host buffer, ggml offloads large prefill
+                #     matmuls to the GPU, so part of the "CPU" prefill number is
+                #     a GPU number.
+                #
+                # Hiding the GPU is what makes this a CPU measurement. Measured:
+                # 1-bit decode 4.85 -> 6.80 tok/s and prefill 11.89 -> 20.16
+                # once repack can actually be selected.
+                # See results/cpu-repack.txt.
+                export CUDA_VISIBLE_DEVICES=""
                 NGLD=0
                 # Leave cores for the OS. Measured on Thor (14 cores),
                 # decode collapses if every core is taken:
