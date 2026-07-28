@@ -163,6 +163,47 @@ r4 = comp("An entirely different opening sentence about turbines")
 check("diverging prefix refuses reuse", r4["bonsai"]["cached_tokens"] == 0,
       f"reused {r4['bonsai']['cached_tokens']} after divergence")
 
+# --- state checkpoints: multi-turn reuse must be a WIN and must be EXACT
+# Plain KV truncation cannot roll back the GDN recurrent state, so multi-turn
+# reuse needs a saved/restored state rather than a truncated one. The last
+# time a TTFT win was claimed here it came from reusing a state the server
+# had no right to reuse, so the speed check is worthless without the
+# identity check beside it.
+SYS = "You are a precise systems engineer. " * 60
+def convo(cache, think=True, n=32):
+    msgs = [{"role": "system", "content": SYS}]
+    res = []
+    for q in ["What is a cache line?", "What is false sharing?", "What is a TLB?"]:
+        msgs.append({"role": "user", "content": q})
+        r = json.load(post("/v1/chat/completions", {
+            "messages": msgs, "max_tokens": n, "temperature": 0,
+            "enable_thinking": think, "cache_prompt": cache}))
+        m = r["choices"][0]["message"]
+        # Feed back `content` ONLY -- that is what a real OpenAI client does;
+        # `reasoning_content` is a non-standard field clients do not echo.
+        # This matters for checkpoint reuse: the next turn's prompt only
+        # extends the previous one if the history the client sends
+        # re-renders to the same tokens, so echoing a field the original
+        # prompt never contained breaks the prefix and correctly refuses
+        # the checkpoint.
+        msgs.append({"role": "assistant", "content": m.get("content", "")})
+        res.append((m.get("content", ""), m.get("reasoning_content", ""),
+                    r["bonsai"]["restored_tokens"], r["bonsai"]["ttft_s"]))
+    return res
+
+for think in (True, False):
+    warm = convo(True, think)
+    cold = convo(False, think)
+    restored = max(t[2] for t in warm)
+    check(f"checkpoint restores a prior turn (thinking={think})", restored > 0,
+          f"max restored {restored} tokens")
+    same = all(w[0] == c[0] and w[1] == c[1] for w, c in zip(warm, cold))
+    check(f"restored state gives IDENTICAL output (thinking={think})", same,
+          "restored and fresh disagree -- the state is wrong, not just fast")
+    if len(warm) > 1:
+        check(f"checkpoint cuts TTFT (thinking={think})", warm[1][3] < warm[0][3],
+              f"{warm[0][3]:.3f}s -> {warm[1][3]:.3f}s")
+
 # --- determinism, at the API level
 outs = set()
 for _ in range(3):

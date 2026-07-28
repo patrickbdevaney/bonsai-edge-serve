@@ -40,6 +40,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W21 | **Decode speed is flat from 4K to 262144 context** | 15.33 -> 15.83 tok/s across a 64x context increase; full 256K fits in ~25 GiB | `03d1a8f` |
 | W22 | q8_0 KV cache is free on this model | 262144 ctx: KV 16384 -> 8704 MiB (-47%), throughput unchanged, greedy output identical | `03d1a8f` |
 | W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `2a2bd75` |
+| W24 | **State checkpoints make multi-turn prefix reuse work on a hybrid model** | TTFT 1.557s -> 0.360s (4.3x), restored output character-identical to a fresh prefill | `pending` |
 
 ---
 
@@ -336,6 +337,40 @@ Corollary that saved a bug: the same multiply trick does NOT work for Q2_0
 That was checked exhaustively *before* assuming symmetry between the two
 formats. The Q1_0 form was likewise verified over all 65536 x 4 inputs.
 Both checks cost seconds in Python and one of them found a real defect.
+
+### L10b. The same win, done correctly -- and what made the difference
+
+L10 ends with "the real win needs `llama_state_seq_save_data`/`restore`
+checkpoints... noting that as future work is better than shipping a cache
+that is fast because it is wrong." That is now built, and it lands in the
+same place the broken version claimed:
+
+| | turn 0 | turn 1 | turn 2 |
+| :-- | --: | --: | --: |
+| restored tokens | 0 | 440 | 455 |
+| TTFT | 1.557s | **0.360s** | **0.379s** |
+
+The difference between this and the version that had to be retracted is one
+assertion: **the gate checks that the restored output is character-identical
+to a fresh prefill**, not merely that it arrived sooner. Both versions
+produced a ~4x TTFT improvement and plausible text. Only one of them was
+computing the right thing, and the speed measurement could not tell them
+apart.
+
+Two implementation details worth keeping:
+
+- **Checkpoint at the template boundary, not the end of the prompt.** With
+  `enable_thinking:false` the server appends `<think></think>` after the
+  template output, and that suffix is not at the same position in the next
+  turn's prompt -- so a checkpoint at full prompt length can never be a
+  prefix of the follow-up. Landing the prefill exactly on the boundary fixed
+  a feature that otherwise worked in only one of two modes.
+- **Reuse depends on what the CLIENT echoes.** A test that fed
+  `reasoning_content` back as `content` inserted text the original prompt
+  never contained, broke the prefix, and correctly got no reuse -- which
+  first looked like a bug in the checkpoint code. Real OpenAI clients echo
+  `content` only. The lesson is that a prefix-reuse feature's hit rate is a
+  property of the whole client/template round trip, not of the server alone.
 
 ### L10. Prefix caching cannot be done by truncation on a hybrid model
 

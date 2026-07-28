@@ -41,6 +41,7 @@
 #include <thread>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -158,6 +159,7 @@ struct GenParams {
     std::vector<std::string> stop;
     std::string grammar;   // GBNF; constrains sampling to a formal language
     bool use_cache = true;
+    size_t ckpt_at = 0;   // checkpoint here; 0 = end of prompt
 };
 
 class Engine {
@@ -302,9 +304,23 @@ public:
 // the GDN state is allocated per slot up front.
 
 struct GenStats {
-    int    n_prompt = 0, n_cached = 0, n_generated = 0, n_lcp = 0;
+    int    n_prompt = 0, n_cached = 0, n_generated = 0, n_lcp = 0, n_restored = 0;
     double prefill_s = 0, decode_s = 0, ttft_s = 0;
     std::string finish_reason = "stop";
+};
+
+// A saved sequence state, restorable at an exact token count.
+//
+// This is the thing plain KV truncation cannot do on a hybrid model. The
+// GDN recurrent state summarises every token decoded and has no
+// per-position form, so llama_memory_seq_rm cannot roll it back -- which is
+// why prefix reuse was limited to pure appends. A checkpoint captures the
+// whole state (attention KV + recurrent) at a known prefix length, so it
+// can be restored and the remainder prefilled, regardless of where the new
+// prompt diverges.
+struct Checkpoint {
+    std::vector<llama_token> tokens;   // exactly what this state has consumed
+    std::vector<uint8_t>     blob;
 };
 
 struct Slot {
@@ -326,6 +342,14 @@ struct Slot {
     double t_start = 0, t_prefill_done = 0;
     GenStats st;
     std::string tail;            // rolling buffer for stop-string matching
+    // Checkpoint at the TEMPLATE boundary, not at the end of the prompt.
+    // With enable_thinking=false the server appends "<think>\n\n</think>"
+    // after the template output; that suffix is not present at the same
+    // position in the next turn's prompt, so a checkpoint taken at the full
+    // prompt length is never a prefix of the follow-up and can never be
+    // reused. Saving at the boundary keeps it reusable in both modes.
+    size_t ckpt_at = 0;
+    bool   ckpt_saved = true;
 
     // handoff to the HTTP thread
     std::mutex mu;
@@ -342,6 +366,11 @@ public:
     // deque, not vector: Slot owns a mutex and a condition_variable, so it
     // is neither movable nor copyable and vector::resize cannot build it.
     std::deque<Slot> slots;
+    // Per slot, most-recent-first. Small: each blob is the full sequence
+    // state, so this trades memory for prefill and must stay bounded.
+    std::vector<std::deque<Checkpoint>> ckpts;
+    size_t ckpt_budget_bytes = 0;
+    int    ckpt_per_slot     = 2;
     std::mutex mu;                    // guards slot allocation + the batch loop
     std::condition_variable work_cv;
     std::thread th;
@@ -354,6 +383,7 @@ public:
             slots.back().id = i;
         }
         eng.cache_tokens.assign(eng.n_slots, {});
+        ckpts.resize(eng.n_slots);
         batch = llama_batch_init(2048, 0, eng.n_slots);
     }
 
@@ -403,12 +433,44 @@ public:
                 while (i < n && res[i] == prompt[i]) i++;
                 sl.st.n_lcp = (int) i;
             }
-            if (gp.use_cache) keep = eng.reusable_prefix(sl.id, prompt);
-            else {
+            if (gp.use_cache) {
+                keep = eng.reusable_prefix(sl.id, prompt);
+                // If plain reuse cannot help (the usual case in multi-turn
+                // chat, where the template appends tokens after the
+                // assistant's text and so breaks the strict-prefix rule),
+                // look for a checkpoint whose tokens ARE a prefix.
+                if (keep == 0) {
+                    size_t best = 0;
+                    const Checkpoint * hit = nullptr;
+                    for (const auto & c : ckpts[sl.id]) {
+                        if (c.tokens.size() >= prompt.size()) continue;
+                        if (c.tokens.size() <= best) continue;
+                        if (std::equal(c.tokens.begin(), c.tokens.end(), prompt.begin())) {
+                            best = c.tokens.size();
+                            hit  = &c;
+                        }
+                    }
+                    if (g_verbose) fprintf(stderr, "checkpoint: %zu stored, best prefix %zu of %zu\n",
+                                           ckpts[sl.id].size(), best, prompt.size());
+                    if (hit && llama_state_seq_set_data(eng.ctx, hit->blob.data(),
+                                                        hit->blob.size(), sl.id) > 0) {
+                        keep = best;
+                        eng.cache_tokens[sl.id] = hit->tokens;
+                        sl.st.n_restored = (int) best;
+                    } else {
+                        llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, -1, -1);
+                        eng.cache_tokens[sl.id].clear();
+                    }
+                }
+            } else {
                 llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, -1, -1);
                 eng.cache_tokens[sl.id].clear();
             }
-            llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, (llama_pos) keep, -1);
+            if (sl.st.n_restored == 0) {
+                llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, (llama_pos) keep, -1);
+            }
+            sl.ckpt_at    = gp.ckpt_at ? gp.ckpt_at : prompt.size();
+            sl.ckpt_saved = !(gp.use_cache && ckpt_budget_bytes > 0);
             sl.n_prefilled = keep;
             sl.st.n_prompt = (int) prompt.size();
             sl.st.n_cached = (int) keep;
@@ -427,6 +489,31 @@ public:
     }
 
 private:
+    // Snapshot the sequence state at exactly the prompt boundary. That is
+    // the point a follow-up turn will share, because a chat template
+    // reproduces the whole prior conversation verbatim before appending.
+    void save_checkpoint(Slot & sl, size_t n_tokens) {
+        if (n_tokens == 0 || n_tokens > sl.prompt.size()) return;
+        const size_t need = llama_state_seq_get_size(eng.ctx, sl.id);
+        if (g_verbose) fprintf(stderr, "checkpoint: slot %d needs %.1f MiB (budget %.1f)\n",
+                               sl.id, need/1048576.0, ckpt_budget_bytes/1048576.0);
+        if (need == 0 || need > ckpt_budget_bytes) return;
+        Checkpoint c;
+        c.tokens.assign(sl.prompt.begin(), sl.prompt.begin() + n_tokens);
+        c.blob.resize(need);
+        const size_t got = llama_state_seq_get_data(eng.ctx, c.blob.data(), need, sl.id);
+        if (got == 0) return;
+        c.blob.resize(got);
+        auto & q = ckpts[sl.id];
+        // Drop an existing checkpoint at the same length rather than
+        // accumulating duplicates of the same prefix.
+        for (auto it = q.begin(); it != q.end(); ++it) {
+            if (it->tokens.size() == c.tokens.size()) { q.erase(it); break; }
+        }
+        q.push_front(std::move(c));
+        while ((int) q.size() > ckpt_per_slot) q.pop_back();
+    }
+
     void finish(Slot & sl, const std::string & reason, const std::string & err = "") {
         if (sl.done) return;
         sl.done = true;
@@ -464,7 +551,13 @@ private:
                     // the other slots for an unbounded time.
                     const size_t remain = sl.prompt.size() - sl.n_prefilled;
                     const size_t room   = (size_t) (2048 - batch.n_tokens);
-                    const size_t take   = std::min({remain, room, (size_t) 512});
+                    size_t take = std::min({remain, room, (size_t) 512});
+                    // Land exactly on the checkpoint boundary so the state
+                    // can be snapshotted there.
+                    if (!sl.ckpt_saved && sl.n_prefilled < sl.ckpt_at &&
+                        sl.n_prefilled + take > sl.ckpt_at) {
+                        take = sl.ckpt_at - sl.n_prefilled;
+                    }
                     for (size_t i = 0; i < take; i++) {
                         const int j = batch.n_tokens;
                         batch.token[j]    = sl.prompt[sl.n_prefilled + i];
@@ -500,6 +593,15 @@ private:
                     if (sl.busy) finish(sl, "error", "llama_decode failed");
                 lk.unlock();
                 continue;
+            }
+
+            // ---- snapshot any slot that just landed on its boundary
+            for (auto & sl : slots) {
+                if (sl.busy && !sl.done && !sl.ckpt_saved &&
+                    sl.n_prefilled >= sl.ckpt_at) {
+                    sl.ckpt_saved = true;
+                    save_checkpoint(sl, sl.ckpt_at);
+                }
             }
 
             // ---- sample per slot
@@ -671,6 +773,7 @@ int main(int argc, char ** argv) {
     std::string host = "0.0.0.0", webui_path;
     int port = 8080, n_ctx = 16384, ngl = 999, n_threads = -1, default_predict = 512;
     int n_slots = 4;
+    int ckpt_mb = 2048;          // total checkpoint budget
     std::string kv_type = "q8_0";
     bool deterministic = true, preflight = true;
     bonsai::Backend backend = bonsai::Backend::CPU;
@@ -690,6 +793,7 @@ int main(int argc, char ** argv) {
         else if (a == "--max-tokens")                 default_predict = atoi(next().c_str());
         else if (a == "--slots" || a == "-np")        n_slots = atoi(next().c_str());
         else if (a == "-ctk" || a == "--cache-type")  kv_type = next();
+        else if (a == "--checkpoint-mb")              ckpt_mb = atoi(next().c_str());
         else if (a == "--webui")                      webui_path = next();
         else if (a == "--backend") {
             const std::string b = next();
@@ -720,6 +824,9 @@ int main(int argc, char ** argv) {
 "                        than one and aggregate throughput scales with N\n"
 "      -ctk TYPE         KV cache type: q8_0 (default) or f16. q8_0 halves\n"
 "                        the cache at 262144 ctx for no measurable cost\n"
+"      --checkpoint-mb N per-checkpoint size cap, default 2048, 0 disables.\n"
+"                        State checkpoints are what make multi-turn prefix\n"
+"                        reuse possible at all on a hybrid model\n"
 "      --webui PATH      serve this HTML file at /\n"
 "      --no-deterministic  allow the racy-but-1%%-faster Vulkan graph optimizer\n"
 "      --no-preflight    skip the startup determinism probe\n"
@@ -780,7 +887,12 @@ int main(int argc, char ** argv) {
     printf("loaded: %d slot(s) x n_ctx=%d, KV %s\n", n_slots, eng.n_ctx, kv_type.c_str());
 
     auto sched = std::make_unique<Scheduler>(eng);
+    sched->ckpt_budget_bytes = (size_t) std::max(0, ckpt_mb) << 20;
     sched->start();
+    if (ckpt_mb > 0) {
+        printf("checkpoints: up to %d per slot, %d MiB each max\n",
+               sched->ckpt_per_slot, ckpt_mb);
+    }
 
     // ---- preflight: is this backend even deterministic?
     if (preflight) {
@@ -890,6 +1002,7 @@ int main(int argc, char ** argv) {
         }
 
         std::string prompt_text, err;
+        size_t think_boundary = 0;
         if (chat) {
             if (!body.contains("messages") || !body["messages"].is_array()) {
                 res.status = 400;
@@ -912,6 +1025,9 @@ int main(int argc, char ** argv) {
             // Qwen3-family way to suppress it: the model resumes after
             // </think> and goes straight to the answer.
             if (!body.value("enable_thinking", true)) {
+                // Record where the template output ended, so the state can be
+                // checkpointed at a position the NEXT turn will reproduce.
+                think_boundary = eng.tokenize(prompt_text, true).size();
                 prompt_text += "<think>\n\n</think>\n\n";
             }
         } else {
@@ -925,7 +1041,8 @@ int main(int argc, char ** argv) {
             prompt_text = body["prompt"].get<std::string>();
         }
 
-        const GenParams gp = parse_gen_params(body, default_predict);
+        GenParams gp = parse_gen_params(body, default_predict);
+        gp.ckpt_at = think_boundary;
         const bool stream = body.value("stream", false);
         const std::string id = gen_id(chat ? "chatcmpl" : "cmpl");
         const uint64_t created = (uint64_t) now_s();
@@ -986,7 +1103,8 @@ int main(int argc, char ** argv) {
                 {"ttft_s", st.ttft_s},
                 {"cached_tokens", st.n_cached},
                 {"cache_resident", (int) eng.cache_tokens[0].size()},
-                {"lcp", st.n_lcp}};
+                {"lcp", st.n_lcp},
+                {"restored_tokens", st.n_restored}};
             res.set_content(out.dump(), "application/json");
             return;
         }

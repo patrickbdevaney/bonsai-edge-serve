@@ -63,37 +63,58 @@ living in a wiki you have to read first:
 compute backend is whichever fork build you linked against, because
 `libggml` loads the backend shared objects sitting next to it.
 
-## Prefix caching, and why it is nearly inert here
+## Prefix caching: truncation cannot work here, checkpoints can
 
 Bonsai is **hybrid**: 48 of 64 layers are gated-delta-net. Their recurrent
 state is a single summary of every token decoded, with no per-position
-representation, so `llama_memory_seq_rm` **cannot roll it back**. It can
-drop attention KV entries while the recurrent state still reflects the
-tokens it just "removed".
+representation, so `llama_memory_seq_rm` **cannot roll it back**. It drops
+attention KV entries while the recurrent state still reflects the tokens it
+just "removed".
 
-This does not error. It silently continues the previous answer.
+This does not error — it silently continues the previous answer. We shipped
+that bug and the gate caught it: four identical greedy requests returned
+four different continuations, each resuming where the last stopped. An
+earlier version of this file claimed a 7.7× TTFT win from that cache; **that
+was the broken path**, fast because it reused a state it had no right to.
 
-We shipped that bug and the gate caught it: four identical greedy requests
-returned four different continuations, each picking up where the last left
-off. The rule now is that on a recurrent or hybrid model **only a pure
-append may reuse the KV** — if the resident tokens are not a strict prefix
-of the new prompt, the state is reset and the prompt is re-prefilled.
+Two mechanisms now, in order of preference:
 
-Consequence, stated plainly: **append-only continuation reuses the cache
-(measured 21 of 23 tokens), and multi-turn chat does not.** A chat template
-emits `<|im_end|>` and a new header *after* the assistant's text, so the
-resident tokens stop being a prefix and the reuse is correctly refused.
+**1. State checkpoints (the real fix).** After prefilling, the server
+snapshots the whole sequence state with `llama_state_seq_get_data` — KV
+*and* recurrent, ~150 MiB. A later request whose prompt begins with those
+exact tokens restores it and prefills only the remainder. Because the state
+is saved rather than truncated, the recurrent part is correct by
+construction.
 
-An earlier version of this file claimed a 7.7× TTFT win (2.416s → 0.313s,
-97.6% reuse) for a shared system prompt. **That measurement was of the
-broken path** — fast because it was reusing a state it had no right to
-reuse. With the correct rule the same test reuses 0 tokens and TTFT is flat
-at ~1.42s, matching the uncached path exactly.
+| | turn 0 | turn 1 | turn 2 |
+| :-- | --: | --: | --: |
+| restored tokens | 0 | 440 | 455 |
+| TTFT | 1.557s | **0.360s** | **0.379s** |
 
-Getting the agentic multi-turn win on this architecture requires explicit
-state checkpoints (`llama_state_seq_save_data` / `restore`), which is what
-the fork's own server does — its logs show `created context checkpoint …
-149.626 MiB`. That is real future work, not something to fake.
+4.3× on a 440-token shared system prompt, and the gate asserts the restored
+output is **character-identical** to a fresh prefill — the check the earlier
+claim lacked.
+
+The checkpoint is taken at the **template boundary**, not at the end of the
+prompt. With `enable_thinking:false` the server appends `<think></think>`
+after the template output, and that suffix does not appear at the same
+position in the next turn's prompt — so a checkpoint at the full prompt
+length could never be a prefix of the follow-up. Landing the prefill exactly
+on the boundary makes reuse work in both modes.
+
+**Interop note:** reuse only fires if the history the client sends
+re-renders to the same tokens. A client that echoes `reasoning_content`
+back as `content` inserts text the original prompt never contained, the
+prefix breaks, and the checkpoint is correctly refused. Real OpenAI clients
+echo `content` only, which is the case that works.
+
+`--checkpoint-mb N` caps the per-checkpoint size (default 2048, `0`
+disables); two checkpoints per slot are kept.
+
+**2. Append-only KV reuse (the fallback).** If no checkpoint matches, the
+resident tokens may still be reused when they are a strict prefix of the new
+prompt — measured 21 of 23 tokens on a continuation. Any divergence,
+including stepping back a single token, forces a full reset.
 
 ## Concurrency: 4 slots, and what they are actually for
 
