@@ -35,6 +35,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `ae75cd9` |
 | W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `92d3886` |
 | W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `92d3886` |
+| W19 | **Pure-C++ single-binary OpenAI server** (`bonsai-server`) | 20/20 smoke gate; policy, reasoning split, streaming, web UI, terminal client | `pending` |
 
 ---
 
@@ -186,6 +187,59 @@ Corollary that saved a bug: the same multiply trick does NOT work for Q2_0
 That was checked exhaustively *before* assuming symmetry between the two
 formats. The Q1_0 form was likewise verified over all 65536 x 4 inputs.
 Both checks cost seconds in Python and one of them found a real defect.
+
+### L10. Prefix caching cannot be done by truncation on a hybrid model
+
+`bonsai-server` shipped an ordinary longest-common-prefix KV cache: find the
+shared prefix, `llama_memory_seq_rm` everything after it, decode the tail.
+It measured beautifully -- **TTFT 2.416s -> 0.313s, 7.7x, 97.6% of a long
+system prompt reused.** The outputs looked fine.
+
+It was wrong. Bonsai is **hybrid**: 48 of 64 layers are gated-delta-net,
+whose recurrent state is a single summary of every token ever decoded. It
+has no per-position representation, so `seq_rm` cannot roll it back -- it
+drops attention KV entries while the recurrent state still reflects the
+tokens it just "removed".
+
+The failure is silent and specific: **the model continues the previous
+answer instead of answering the new prompt.** Four identical greedy requests
+returned four different continuations, each resuming where the last stopped.
+
+Two things made this findable, and both were cheap:
+
+- The smoke gate asserted **greedy determinism through the API**, not just
+  a 200 with plausible text. That check is what went red.
+- The `cache_prompt=false` escape hatch existed, so the two paths could be
+  compared directly. `cache=True` gave 4 distinct outputs, `cache=False`
+  gave 1 -- which located the bug in one run.
+
+The correct rule on a recurrent/hybrid model is that **only a pure append
+may reuse the KV**: the resident tokens must be a strict prefix of the new
+prompt, and any divergence -- including stepping back a single token --
+forces a full reset. Implemented, the honest result is:
+
+| pattern | reuse |
+| :-- | :-- |
+| append-only continuation | works, 21 of 23 tokens |
+| multi-turn chat template | never fires |
+
+because a chat template emits `<|im_end|>` and a new header *after* the
+assistant's text, so the resident tokens stop being a prefix. With the fix,
+the system-prompt test reuses 0 tokens and TTFT is flat at 1.42s -- exactly
+matching the uncached path, which is the tell that the original 0.313s was
+never a real prefill.
+
+The real win needs `llama_state_seq_save_data`/`restore` checkpoints, which
+is what the fork's server does (its logs show `created context checkpoint
+... 149.626 MiB`). Noting that as future work is better than shipping a
+cache that is fast because it is wrong.
+
+**Generalizable, and this is the third instance in this ledger:** a
+performance win measured without a correctness check on the same path is
+not a win. Caching, reordering and reuse optimisations all make things
+faster *by doing less work*, so "faster" is exactly what a broken one looks
+like. Pair every such change with an output-equality assertion against the
+unoptimised path -- here, four lines of gate.
 
 ### L9. A gate run against a nondeterministic system measures nothing
 

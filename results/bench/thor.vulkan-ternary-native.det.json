@@ -1,0 +1,248 @@
+{
+  "label": "thor.vulkan-ternary-native.det",
+  "url": "http://127.0.0.1:8080",
+  "n_predict": 128,
+  "temperature": 0.0,
+  "unix_time": 1785206965.0395105,
+  "host_mem_mib_before": 22262,
+  "gpu_mem_mib": null,
+  "workloads": {
+    "code": {
+      "summary": {
+        "n_requests": 8,
+        "decode_tok_s_median": 16.02210046577821,
+        "decode_tok_s_mean": 15.954723146005174,
+        "ttft_s_median": 0.6262116729994887,
+        "prefill_tok_s_median": 88.9004189745925,
+        "draft_n_total": 0,
+        "draft_n_accepted_total": 0,
+        "acceptance_pooled": null
+      },
+      "rows": [
+        {
+          "id": "code/py-binsearch",
+          "ttft_s": 0.6317087759998685,
+          "total_s": 8.848671977000777,
+          "prompt_n": 34,
+          "predicted_n": 128,
+          "decode_tok_s": 15.577973232660682,
+          "prefill_tok_s": 63.643000205903824,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 352
+        },
+        {
+          "id": "code/py-lru",
+          "ttft_s": 0.6153585400024895,
+          "total_s": 8.68714867000017,
+          "prompt_n": 37,
+          "predicted_n": 128,
+          "decode_tok_s": 15.85774610633486,
+          "prefill_tok_s": 77.4987589725759,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 490
+        },
+        {
+          "id": "code/c-matmul",
+          "ttft_s": 0.6976675309997518,
+          "total_s": 8.696466381999926,
+          "prompt_n": 80,
+          "predicted_n": 128,
+          "decode_tok_s": 16.003294678291894,
+          "prefill_tok_s": 144.70837644437046,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 375
+        },
+        {
+          "id": "code/cuda-reduce",
+          "ttft_s": 0.6325673270002881,
+          "total_s": 8.604992814998695,
+          "prompt_n": 63,
+          "predicted_n": 128,
+          "decode_tok_s": 16.055771730075886,
+          "prefill_tok_s": 127.65647035938335,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 406
+        },
+        {
+          "id": "code/rust-parser",
+          "ttft_s": 0.6087746579978557,
+          "total_s": 8.594878853997216,
+          "prompt_n": 41,
+          "predicted_n": 128,
+          "decode_tok_s": 16.027742017965345,
+          "prefill_tok_s": 87.52679173747087,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 362
+        },
+        {
+          "id": "code/go-worker",
+          "ttft_s": 0.6027663540007779,
+          "total_s": 8.594560860001366,
+          "prompt_n": 42,
+          "predicted_n": 128,
+          "decode_tok_s": 16.016458913591077,
+          "prefill_tok_s": 90.27404621171412,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 519
+        },
+        {
+          "id": "code/sql-window",
+          "ttft_s": 0.6537644810014172,
+          "total_s": 8.633911128999898,
+          "prompt_n": 30,
+          "predicted_n": 128,
+          "decode_tok_s": 16.04023894442195,
+          "prefill_tok_s": 58.14967726929116,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 504
+        },
+        {
+          "id": "code/ts-react-hook",
+          "ttft_s": 0.6207145699991088,
+          "total_s": 8.591394277998916,
+          "prompt_n": 57,
+          "predicted_n": 128,
+          "decode_tok_s": 16.05855954469969,
+          "prefill_tok_s": 117.30663955579885,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 514
+        }
+      ]
+    },
+    "prose": {
+      "summary": {
+        "n_requests": 8,
+        "decode_tok_s_median": 16.01973753393554,
+        "decode_tok_s_mean": 16.019112320421055,
+        "ttft_s_median": 0.6347725984996941,
+        "prefill_tok_s_median": 48.33746365811086,
+        "draft_n_total": 0,
+        "draft_n_accepted_total": 0,
+        "acceptance_pooled": null
+      },
+      "rows": [
+        {
+          "id": "prose/coastal-town",
+          "ttft_s": 0.4825180920015555,
+          "total_s": 8.458595380001498,
+          "prompt_n": 24,
+          "predicted_n": 128,
+          "decode_tok_s": 16.048170590047352,
+          "prefill_tok_s": 49.895012577701095,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 597
+        },
+        {
+          "id": "prose/essay-attention",
+          "ttft_s": 0.6369469419987581,
+          "total_s": 8.615682943996944,
+          "prompt_n": 26,
+          "predicted_n": 128,
+          "decode_tok_s": 16.0434174986056,
+          "prefill_tok_s": 52.08176837635088,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 659
+        },
+        {
+          "id": "prose/history-canal",
+          "ttft_s": 0.6292991369991796,
+          "total_s": 8.610476564001146,
+          "prompt_n": 23,
+          "predicted_n": 128,
+          "decode_tok_s": 16.038022140990755,
+          "prefill_tok_s": 46.71150971599402,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 703
+        },
+        {
+          "id": "prose/letter-resign",
+          "ttft_s": 0.6491581469999801,
+          "total_s": 8.66743383299763,
+          "prompt_n": 21,
+          "predicted_n": 128,
+          "decode_tok_s": 15.964437220536603,
+          "prefill_tok_s": 40.854441461421736,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 507
+        },
+        {
+          "id": "prose/review-restaurant",
+          "ttft_s": 0.6293433920000098,
+          "total_s": 8.623914824998792,
+          "prompt_n": 23,
+          "predicted_n": 128,
+          "decode_tok_s": 16.011289960833633,
+          "prefill_tok_s": 46.779914738520624,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 436
+        },
+        {
+          "id": "prose/philosophy-memory",
+          "ttft_s": 0.6325982550006302,
+          "total_s": 8.62224848400001,
+          "prompt_n": 23,
+          "predicted_n": 128,
+          "decode_tok_s": 16.02159911831137,
+          "prefill_tok_s": 46.423381236880346,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 624
+        },
+        {
+          "id": "prose/travel-highlands",
+          "ttft_s": 0.637840088998928,
+          "total_s": 8.629265865998605,
+          "prompt_n": 26,
+          "predicted_n": 128,
+          "decode_tok_s": 16.01787594955971,
+          "prefill_tok_s": 51.91309747482714,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 472
+        },
+        {
+          "id": "prose/dialogue-argument",
+          "ttft_s": 0.657567337002547,
+          "total_s": 8.653564006999659,
+          "prompt_n": 27,
+          "predicted_n": 128,
+          "decode_tok_s": 16.008086084483423,
+          "prefill_tok_s": 51.75398074368554,
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "acceptance": null,
+          "output_chars": 502
+        }
+      ]
+    }
+  },
+  "host_mem_mib_after": 27202
+}

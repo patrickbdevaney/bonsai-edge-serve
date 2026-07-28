@@ -274,6 +274,39 @@ Vulkan kernels -- it was one sample, and re-running it would have given a
 different number. **Establish determinism before running any comparison
 gate.** Full write-up: `results/vulkan-nondeterminism.txt`.
 
+## Serving: `bonsai-server` (pure C++, single binary)
+
+A lean OpenAI-compatible server that links `libllama` directly -- no Python
+on the hot path, no proxy hop. `server/README.md` has the detail.
+
+```bash
+BUILD_DIR=build-vulkan2 ./server/build.sh
+./build/bonsai-server -m ~/models/bonsai/ternary/Ternary-Bonsai-27B-Q2_0.gguf \
+    --backend vulkan --webui server/webui.html
+./build/chat                     # streaming terminal client
+./bench/gate_server.sh 8085      # 20-check smoke gate
+```
+
+`/v1/chat/completions` (SSE + non-streaming), `/v1/completions`,
+`/v1/models`, `/metrics`, `/v1/policy`, self-contained web UI at `/`.
+`<think>` blocks are routed to `reasoning_content`; `enable_thinking:false`
+suppresses them for short answers.
+
+**The policy layer is the point.** Running `llama-server` gets you an
+OpenAI API too. What this binary adds is that this repo's measurements are
+applied by default rather than living in a wiki you have to read first:
+speculation OFF on Vulkan (measured 0.33-0.43x), determinism enforced on
+Vulkan, 12 CPU threads and not 14. `GET /v1/policy` returns every decision
+with the number behind it.
+
+**Prefix caching is nearly inert here, and that is a finding.** Bonsai is
+hybrid -- 48 of 64 layers are gated-delta-net, whose recurrent state cannot
+be truncated by `llama_memory_seq_rm`. An ordinary LCP cache does not error;
+it silently continues the previous answer. Only a pure append can reuse the
+KV, which means append-only continuation reuses (21 of 23 tokens measured)
+and multi-turn chat does not. An earlier draft of this README claimed a 7.7x
+TTFT win from that cache -- it was measuring the broken path. See WIKI L10.
+
 ## Energy per token (Phase 6)
 
 From Jetson's own power rails via `tegrastats`. `VIN` is whole-board
