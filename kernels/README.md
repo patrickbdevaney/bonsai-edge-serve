@@ -441,6 +441,36 @@ Q1_0 at the DRAM ceiling, a LUT could only help the few-thread case.
 Revisit on AVX-512 VBMI hosts (`vpermb`: 64 lanes, no plane split),
 where the model tips the other way.
 
+### Per-token compute: the DRAM-independent side
+
+A decode step is weight streaming plus per-token work on K-sized
+vectors -- quantize activations to int8 per 128-group, permute into the
+plane layout -- which runs once per projection per layer and cares
+nothing for memory bandwidth or DRAM contention. It was scalar;
+`token_overhead_bench.c` vectorizes it and prices it at the recorded
+model dims (hidden 5120, FFN 17408). AVX2 quant matches scalar
+bit-exact; permutes are byte-exact (each is a dword transpose -- 12
+shuffles replace 128 scalar stores).
+
+| op, single thread | K=5120 | K=17408 | speedup |
+| :-- | --: | --: | --: |
+| quant scalar -> AVX2 | 27.4 -> 2.1 us | 100.3 -> 7.5 us | ~13x |
+| permute q2 scalar -> AVX2 | 6.7 -> 0.21 us | 25.2 -> 0.81 us | ~31x |
+| permute q1 scalar -> AVX2 | 1.1 -> 0.15 us | 4.4 -> 0.56 us | ~8x |
+
+Priced against a 64-layer schedule (two hidden-sized quants + one
+FFN-sized per layer, plus permutes): **~12.4 ms/token scalar, ~0.8
+ms/token AVX2**. Against the ~127 ms a 1-bit token spends streaming
+weights, the scalar version was silently costing ~10%; now it is noise.
+
+The same bench prices the other DRAM-independent tax: an OpenMP
+fork-join is 14-27 us per region at decode thread counts, and a naive
+decode step that opens one region per projection (~450/token) would pay
+~12 ms/token -- as much as all the scalar quantization it just
+replaced. Integration design rule, measured not asserted: **one
+parallel region per token** (or a persistent team), never one per
+GEMV.
+
 ### What that means end to end
 
 Projecting weights-only bandwidth onto the real model (ternary 7.17 GB,

@@ -31,6 +31,10 @@ test: test_shapes.c gemv_avx_bench.c ../common/bonsai_gemv.h
 	./test_shapes
 
 clean:
-	rm -f gemv_avx_bench test_shapes
+	rm -f gemv_avx_bench test_shapes token_overhead_bench
 
-.PHONY: blas test clean
+.PHONY: blas test overhead clean
+
+overhead: token_overhead_bench.c gemv_avx_bench.c ../common/bonsai_gemv.h
+	$(CC) $(CFLAGS) -o token_overhead_bench token_overhead_bench.c -lm
+	./token_overhead_bench
