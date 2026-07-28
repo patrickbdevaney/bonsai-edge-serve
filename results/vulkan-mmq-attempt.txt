@@ -166,3 +166,44 @@ question ("is this code even reached on this device?") was asked, and that
 question was cheaper than all six.
 
 Ask what the device selects before verifying what the feature requires.
+
+
+================================================================================
+FOLLOW-UP: the shaders were shipped correctness-unverified, and now are not
+================================================================================
+
+The work above measured MMQ's THROUGHPUT under forced dispatch (0.36x/0.45x)
+and concluded, correctly, that the path should stay off on a coopmat device.
+What it never did was check MMQ's OUTPUT.
+
+That is a live gap rather than an academic one, because the gate is
+`!coopmat && !coopmat2`: any Vulkan device with integer dot product but
+WITHOUT cooperative matrix selects these shaders automatically. Shipping them
+on the strength of a throughput number means shipping unverified arithmetic
+to hardware nobody here has.
+
+Validated now, on the same forced path:
+
+  GGML_VK_FORCE_MMQ_COOPMAT=1 test-backend-ops -o MUL_MAT -b Vulkan0
+    -> 38 q2_0/q1_0 MUL_MAT shapes, 38 OK, 0 FAIL
+
+  greedy generation, same prompt, forced MMQ vs default dequant+coopmat
+    -> CHARACTER-IDENTICAL
+
+One trap inside the check. Both runs report ~65 failing `type_a=f32` shapes
+and the suite's overall verdict is FAIL, which reads at a glance as "MMQ
+broke f32". It did not: the BASELINE run fails the same 65. They are a
+pre-existing permuted-f32 matmul issue in the fork. Counting failures
+per-type rather than reading the summary line is what separates "my change
+broke this" from "this was already broken" -- and the summary line alone
+would have condemned the wrong thing.
+
+A second trap, from the tooling: `grep -oE "OK$"` silently matches nothing
+against this suite's output, because the status is followed by ANSI colour
+codes. The first pass therefore reported zero results for both arms and
+looked like the tests had not run. Strip escapes (`sed -r
+'s/\x1B\[[0-9;]*[mK]//g'`) before matching on anything anchored.
+
+STATUS: MMQ correctness is validated here. What remains unmeasured is MMQ's
+PERFORMANCE on a device that actually lacks cooperative matrix, which is the
+only place it would ever be selected for real.

@@ -434,6 +434,41 @@ faster *by doing less work*, so "faster" is exactly what a broken one looks
 like. Pair every such change with an output-equality assertion against the
 unoptimised path -- here, four lines of gate.
 
+### L17. A kernel measured for speed but never for correctness, shipped
+
+The Vulkan MMQ shaders were committed on the strength of a throughput
+measurement: forced dispatch gave 0.36x/0.45x of dequant+coopmat, so the
+path correctly stays off here. Reasonable conclusion, and the output was
+never checked.
+
+That is not academic. The gate is `!coopmat && !coopmat2`, so **any Vulkan
+device with integer dot product but without cooperative matrix selects
+those shaders automatically.** Measuring only speed on the one device where
+the path is disabled, then shipping it for every device where it is
+enabled, is a correctness claim made entirely by omission.
+
+Validated afterwards (38 `MUL_MAT` shapes, 0 fail; greedy output
+character-identical to the default path), so the shaders are in fact
+correct. The process was still wrong: "we don't run this path" is exactly
+when output has to be forced and checked, because nothing else will.
+
+**Generalizable:** when a gate means *your* hardware never runs a code
+path, that path needs MORE validation than the one you do run, not less.
+The forcing hook that measures its speed will also produce its output --
+comparing that output is nearly free once the hook exists.
+
+Two tooling traps this also surfaced:
+
+- Both arms of the op-test report ~65 failing `type_a=f32` shapes and an
+  overall FAIL. The baseline fails the same 65 -- a pre-existing
+  permuted-f32 issue. **Counting per-type rather than reading the summary
+  line** is what separates "my change broke this" from "already broken";
+  the summary alone would have condemned the wrong thing.
+- `grep -oE "OK$"` matches nothing against that suite, because the status
+  is followed by ANSI colour codes, so the first pass reported zero
+  results for both arms and looked like the tests had not run. Strip
+  escapes before matching anything anchored.
+
 ### L16. Elementwise relative error is the wrong gate for a dot product
 
 Extending the q2_0 kernel test from one shape to a 100-shape sweep produced

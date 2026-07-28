@@ -24,7 +24,7 @@ smoothed over.
 | :-- | :-- | :-- | :-- |
 | NEON + i8mm (Armv8.6+) | `ggml_cpu_has_dotprod()` selects repack; `__ARM_FEATURE_MATMUL_INT8` selects the gemm | q2_0 repack, `vmmlaq_s32` gemm | **tested here** (Neoverse V3AE) |
 | NEON + DOTPROD only (Armv8.2+) | same selector; gemm falls to the `vdotq_s32` path | q2_0 repack, DOTPROD gemm | **tested here** via `BONSAI_Q2_0_NO_I8MM=1` |
-| NEON without DOTPROD | selector returns `nullptr` | no repack; ggml's per-row NEON `vec_dot` | gated, untested |
+| NEON without DOTPROD | selector returns `nullptr` | no repack; ggml's per-row NEON `vec_dot` | **path exercised here** via `BONSAI_NO_ARM_REPACK=1`; greedy output character-identical |
 
 The DOTPROD fallback is the reason the selector gates on `dotprod` and not
 `matmul_int8`. **i8mm is Armv8.6; Cortex-A76/A78 are Armv8.2 and do not have
@@ -71,10 +71,10 @@ worth writing blind. It needs a machine.
 
 | Feature | Gate | Path taken | Status |
 | :-- | :-- | :-- | :-- |
-| `VK_KHR_shader_integer_dot_product` + glslc with `GL_EXT_integer_dot_product` | runtime extension check + `GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT` | q1_0/q2_0 MMVQ (**+44% / +31% decode**) | **tested here** |
-| no integer dot product | gate fails | dequant MMV — correct, slower | gated, untested |
+| `VK_KHR_shader_integer_dot_product` + glslc with `GL_EXT_integer_dot_product` | runtime extension check + `GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT` | q1_0/q2_0 MMVQ (**+44% / +31% decode**) | **tested here** — 56/56 op shapes |
+| no integer dot product | gate fails | dequant MMV — correct, slower | **path exercised here** via `GGML_VK_DISABLE_MMVQ=1`; 56/56 op shapes, 0 fail |
 | KHR_coopmat present | shader-gen `!coopmat && !coopmat2` | MMQ **not** built; dequant + coopmat prefill | **tested here** |
-| no coopmat | non-coopmat branch | scalar int-dot MMQ available | gated, untested |
+| no coopmat | non-coopmat branch | scalar int-dot MMQ | **path exercised here** via `GGML_VK_FORCE_MMQ_COOPMAT=1` — see below |
 
 Two things worth flagging for anyone porting this:
 
@@ -82,8 +82,24 @@ Two things worth flagging for anyone porting this:
 measured decision, not an oversight.** Forcing it on Thor gives 0.36x/0.45x
 of the dequant+coopmat path, because these are scalar `dotPacked4x8AccSat`
 shaders that cannot reach the tensor cores. On a device with integer dot
-product but *without* cooperative matrix, MMQ is the right path and the code
-is ready — that case has never been run here. See
+product but *without* cooperative matrix, MMQ is the right path.
+
+**Those shaders are now validated, which they were not when first shipped.**
+The original commit measured MMQ's throughput and never checked its output --
+meaning correctness-unverified shaders were being shipped for other people's
+hardware, since a non-coopmat device selects them automatically. Forcing the
+path here (`GGML_VK_FORCE_MMQ_COOPMAT=1`):
+
+* 38 q2_0/q1_0 `MUL_MAT` shapes pass, **0 fail**
+* greedy model output is **character-identical** to the default
+  dequant+coopmat path
+
+(62-65 `type_a=f32` failures appear in these runs, but they are present in
+the *baseline* too -- a pre-existing permuted-f32 matmul issue in the fork,
+not related to this work. Counting them per-type is what separates the two.)
+
+What remains untested is MMQ's **performance** on a genuine non-coopmat
+device. Correctness is no longer in that category. See
 `results/vulkan-mmq-attempt.txt`.
 
 **The MMVQ change moves q1_0/q2_0 into the 32-quant size class**, alongside
@@ -126,16 +142,48 @@ consults a measured table and refuses where speculation is known to lose,
 and `/v1/policy` prints the constant and its consequence rather than just
 asserting a default.
 
+## Exercising every path on your own hardware
+
+The point of the hooks below is that a porter does not have to trust any of
+the tables above. Each forces a code path that the hardware would otherwise
+never select, so every branch can be validated on whatever device you have:
+
+| Hook | Forces | Use |
+| :-- | :-- | :-- |
+| `BONSAI_Q2_0_NO_I8MM=1` | q2_0 gemm onto DOTPROD | validate/cost the Armv8.2 path on Armv8.6 hardware |
+| `BONSAI_NO_ARM_REPACK=1` | selector returns `nullptr` | the no-repack fallback, and the A/B control |
+| `BONSAI_REPACK_DEBUG=1` | prints every type offered to the repack selector | confirm the path is reached *at all* |
+| `GGML_VK_FORCE_MMQ_COOPMAT=1` | MMQ registration on a coopmat device | validate the non-coopmat shaders |
+| `GGML_VK_DISABLE_MMVQ=1` | dequant MMV | the no-integer-dot fallback |
+| `GGML_VK_FORCE_MMVQ=1` | MMVQ below its k threshold | required for op tests to reach MMVQ at all |
+| `BONSAI_FORCE_RS_SEQ0=1` | recurrent rollback ring to 0 | check the server refuses to speculate |
+
+Two of these were added specifically because a gated path could not otherwise
+be reached here, and both immediately paid for themselves: the MMQ hook
+revealed that shaders shipped for other hardware had never been checked for
+correctness, and the repack-debug hook revealed that an entire A/B had been
+measuring nothing (WIKI L15).
+
 ## Summary of real gaps
+
+Now genuinely untested:
 
 1. **x86 AVX2 q2_0** — no path exists. Needs an x86 host.
 2. **x86 AVX512-VNNI q2_0/q1_0** — exists upstream, never executed by us.
-3. **Vulkan MMQ on a non-coopmat device** — implemented, never run.
-4. **ARM without DOTPROD** — falls back correctly, never run.
-5. **Any CUDA arch other than sm_110** — compiles, never run.
-6. **R for speculation on any device but this one** — unmeasured by
-   construction.
+3. **Any CUDA arch other than sm_110** — compiles, never run.
+4. **Performance** (not correctness) of Vulkan MMQ and the ARM DOTPROD gemm
+   on hardware that actually needs them — the code paths are validated here,
+   but a real A78 or a non-coopmat GPU differs in cache, bandwidth and core
+   count.
+5. **R for speculation on any device but this one** — unmeasured by
+   construction, and it must be re-measured before enabling speculation.
 
-None of these are believed broken. All of them are untested, which is a
-different statement, and the reason they are listed separately from the
-tables above.
+Closed since the first version of this document:
+
+* ~~Vulkan MMQ on a non-coopmat device~~ — correctness now validated here
+  (38 shapes, 0 fail; output character-identical).
+* ~~ARM without DOTPROD~~ — fallback exercised, output character-identical.
+* ~~Vulkan without integer dot product~~ — exercised, 56/56 op shapes.
+
+None of the remaining items are believed broken. All are untested, which is a
+different statement, and the reason they are listed separately.
