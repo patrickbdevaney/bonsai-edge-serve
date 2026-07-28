@@ -46,7 +46,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W27 | **DSpark runs in-process in `bonsai-server`** | code 1.74x/1.80x, prose 1.49x/1.60x (ternary/1-bit); greedy identical to AR on 14/20 | `a7c5491` |
 | W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
 | W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
-| W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | pending |
+| W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | `f738f35` |
 
 ---
 
