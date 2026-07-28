@@ -1,7 +1,7 @@
 # Portability: what each kernel needs, and what happens without it
 
-Everything in this repo was developed on one box (Jetson Thor, sm_110,
-Neoverse V3AE). The kernels are **not** Thor-specific, but "not
+Most of this repo was developed on one box (Jetson Thor, sm_110, Neoverse
+V3AE); the x86 kernels were developed and measured on an i9-14900HX. The kernels are **not** Thor-specific, but "not
 Thor-specific" is a claim that needs stating precisely, because the failure
 mode for a wrongly-gated kernel is silence: the model loads, the output is
 correct, and the optimisation simply never runs. That has already happened
@@ -54,18 +54,40 @@ difference; it does not measure an actual A78. Cache sizes, core counts and
 memory bandwidth all differ, so treat 8.94 as "this path works and is worth
 ~2.2x", not as an Orin prediction.
 
-## CPU — x86
+## CPU — x86 (`patches/0005`)
 
-| Feature | Path | Status |
-| :-- | :-- | :-- |
-| AVX512 + AVX512-VNNI | q2_0/q1_0 repack (upstream fork code, not ours) | **untested by us** — no x86 host |
-| AVX2 only | no repack; scalar/AVX2 `vec_dot` | gap |
+| Feature | Gate | Path taken | Status |
+| :-- | :-- | :-- | :-- |
+| AVX512 + AVX512-VNNI | `ggml_cpu_has_avx512_vnni()` | q2_0/q1_0 repack (upstream fork code) | untested |
+| AVX2 / AVX-VNNI | `ggml_cpu_has_avx2()` (AVX2 tier) | q2_0 repack, VPDPBUSD or exact VPMADDUBSW fallback | **tested on i9-14900HX** |
+| pre-AVX2 | no tier matches | no repack; `vec_dot` | untested |
 
-We have not written or validated any x86 kernel and do not claim one. The
-fork's AVX512-VNNI repack path for these types exists and we have never
-executed it. An AVX2 path does not exist for q2_0 at all, which is the same
-shape of gap the ARM DOTPROD fallback just closed — worth doing, but not
-worth writing blind. It needs a machine.
+This closed on a borrowed machine, and it is the exact mirror of the ARM
+DOTPROD story: the fork's q1_0/q2_0 repack kernels were gated on
+**AVX-512 VNNI, which is fused off on consumer Raptor Lake parts**, so every
+such CPU silently fell through to `vec_dot` — the same shape of
+too-narrow gate that would have excluded Jetson Orin on ARM. Patch 0005 adds
+VEX-width branches and an AVX2 selection tier.
+
+Measured (llama-bench, i9-14900HX): q2_0 **pp512 23.8 vs 7.1 (3.4x)**,
+**tg128 8.6 vs 4.8 (1.8x)**. Validated the same way as the ARM kernels —
+linking the real `libggml-cpu.so` and comparing all four kernels against the
+generic reference over 100 shapes plus degenerate all-same-code weights,
+bit-exact.
+
+**q1_0 measured at parity with its existing x86 `vec_dot`, so the AVX2 tier
+selects q2_0 only.** That is the third independent instance of the same
+lesson in this repo: gate on what was *measured* to help, not on what the
+instruction set makes *possible*.
+
+Cross-arch integration was checked here: patch 0005 applies cleanly on top
+of 0003+0004, builds on aarch64, and leaves both ARM gemm paths at 100/100
+shapes. The two patches touch the same selector function and do not
+conflict.
+
+One wart worth knowing: **`BONSAI_NO_ARM_REPACK` also gates the x86 AVX2
+tier.** The name is ARM-specific, the behaviour is not — it is the generic
+"disable repack" A/B switch on both architectures.
 
 ## Vulkan (`patches/0003`)
 
@@ -151,7 +173,7 @@ never select, so every branch can be validated on whatever device you have:
 | Hook | Forces | Use |
 | :-- | :-- | :-- |
 | `BONSAI_Q2_0_NO_I8MM=1` | q2_0 gemm onto DOTPROD | validate/cost the Armv8.2 path on Armv8.6 hardware |
-| `BONSAI_NO_ARM_REPACK=1` | selector returns `nullptr` | the no-repack fallback, and the A/B control |
+| `BONSAI_NO_ARM_REPACK=1` | selector returns `nullptr` (ARM **and** x86 AVX2 tier) | the no-repack fallback, and the A/B control |
 | `BONSAI_REPACK_DEBUG=1` | prints every type offered to the repack selector | confirm the path is reached *at all* |
 | `GGML_VK_FORCE_MMQ_COOPMAT=1` | MMQ registration on a coopmat device | validate the non-coopmat shaders |
 | `GGML_VK_DISABLE_MMVQ=1` | dequant MMV | the no-integer-dot fallback |
@@ -168,8 +190,8 @@ measuring nothing (WIKI L15).
 
 Now genuinely untested:
 
-1. **x86 AVX2 q2_0** — no path exists. Needs an x86 host.
-2. **x86 AVX512-VNNI q2_0/q1_0** — exists upstream, never executed by us.
+1. **x86 AVX512-VNNI q2_0/q1_0** — exists upstream, never executed.
+2. **x86 pre-AVX2** — falls back correctly, never run.
 3. **Any CUDA arch other than sm_110** — compiles, never run.
 4. **Performance** (not correctness) of Vulkan MMQ and the ARM DOTPROD gemm
    on hardware that actually needs them — the code paths are validated here,
@@ -184,6 +206,8 @@ Closed since the first version of this document:
   (38 shapes, 0 fail; output character-identical).
 * ~~ARM without DOTPROD~~ — fallback exercised, output character-identical.
 * ~~Vulkan without integer dot product~~ — exercised, 56/56 op shapes.
+* ~~x86 AVX2 q2_0~~ — implemented and measured on an i9-14900HX
+  (`patches/0005`), 3.4x prefill / 1.8x decode.
 
 None of the remaining items are believed broken. All are untested, which is a
 different statement, and the reason they are listed separately.
