@@ -51,7 +51,25 @@ case "$ENGINE" in
                 [ -x "$BIN" ] || BIN="$FORK_DIR/build/bin/llama-server"
                 ;;
             vulkan)
-                BIN="$FORK_DIR/build-vulkan/bin/llama-server"
+                # build-vulkan2 carries the q1_0/q2_0 integer-dot MMVQ path
+                # (patches/0003, +34.1% / +23.7% decode). Prefer it, and fall
+                # back to the pre-MMVQ build if it has not been built.
+                BIN="$FORK_DIR/build-vulkan2/bin/llama-server"
+                [ -x "$BIN" ] || BIN="$FORK_DIR/build-vulkan/bin/llama-server"
+
+                # ggml-vulkan's graph_optimize reorder pass makes this model
+                # NONDETERMINISTIC -- up to 8 distinct outputs from 10
+                # identical greedy requests, because it reorders around
+                # hazards that is_src_of cannot see (recurrent state across
+                # 48 gated-delta-net layers). Determinism costs 2.2% prefill
+                # and 1.0% decode, measured interleaved, and takes the trace
+                # gate from 1/16 reproducing the CUDA oracle to 11/16.
+                # See results/vulkan-nondeterminism.txt.
+                # Set BONSAI_VK_GRAPH_OPTIMIZE=1 to opt back into the fast,
+                # racy behaviour (e.g. to reproduce the old throughput rows).
+                if [ "${BONSAI_VK_GRAPH_OPTIMIZE:-0}" != "1" ]; then
+                    export GGML_VK_DISABLE_GRAPH_OPTIMIZE=1
+                fi
                 ;;
             cpu)
                 # Reuses any build; the CPU backend is always present.

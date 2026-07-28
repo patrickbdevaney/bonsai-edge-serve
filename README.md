@@ -118,12 +118,20 @@ cores, so differences are the backend's, not the device's.
 
 | Backend | Variant | native code | native prose | DSpark code | DSpark prose |
 | :-- | :-- | --: | --: | --: | --: |
-| CUDA | ternary | 16.77 | 16.97 | **24.85** (1.48x) | **23.23** (1.37x) |
-| CUDA | 1-bit | 19.03 | 18.98 | **33.24** (1.75x) | **26.25** (1.38x) |
-| Vulkan | ternary | 11.79 | 11.79 | 7.01 (0.59x) | 6.38 (0.54x) |
-| Vulkan | 1-bit | 15.98 | 16.01 | 7.56 (0.47x) | 6.28 (0.39x) |
-| CPU (NEON) | ternary | 2.22 | 2.15 | 2.37 (1.07x) | 1.71 (0.79x) |
+| CUDA | ternary | 16.77 | 16.97 | **24.85 (1.48x)** | **23.23 (1.37x)** |
+| CUDA | 1-bit | 19.03 | 18.98 | **33.24 (1.75x)** | **26.25 (1.38x)** |
+| Vulkan | ternary | 15.74 | 16.14 | 6.81 (0.43x) | 6.24 (0.39x) |
+| Vulkan | 1-bit | 19.57 | 19.60 | 8.20 (0.42x) | 6.43 (0.33x) |
+| CPU (NEON) | ternary | 2.22 | 2.15 | **2.37 (1.07x)** | 1.71 (0.79x) |
 | CPU (NEON) | 1-bit | 3.41 | 3.35 | 3.00 (0.88x) | 3.35 (1.00x) |
+
+<!-- sources: Vulkan/1-bit dspark from '.mmvq' results; Vulkan/1-bit native from '.mmvq' results; Vulkan/ternary dspark from '.mmvq' results; Vulkan/ternary native from '.mmvq' results -->
+
+The Vulkan rows were measured with the fork's default `graph_optimize`
+enabled. That pass is a correctness bug (see below) and
+`serve_reference.sh` now disables it by default, which costs 2.2% prefill
+and 1.0% decode -- so the Vulkan figures above are optimistic by about a
+point, and reproducing them needs `BONSAI_VK_GRAPH_OPTIMIZE=1`.
 
 tok/s, median over 8 prompts per class. CPU rows use 64 generated tokens
 rather than 128 to keep a ~3 tok/s backend tractable; rates and
@@ -131,8 +139,15 @@ acceptance stay comparable. Full table with TTFT, prefill and acceptance:
 `python3 bench/render_table.py --speedup results/bench/*.json`.
 
 **Speculation pays off on exactly one of the three backends.** CUDA
-1.37-1.75x, Vulkan 0.39-0.59x, CPU 0.79-1.07x. Same weights, same
+1.37-1.75x, Vulkan 0.33-0.43x, CPU 0.79-1.07x. Same weights, same
 drafter, same box.
+
+**Vulkan native has closed the gap to CUDA, and the 1-bit build passes
+it.** The Vulkan rows moved after the integer-dot MMVQ path was
+implemented for `q1_0`/`q2_0` (ternary 11.79 -> 15.74, 1-bit 15.98 ->
+19.57; `results/vulkan-mmvq-q2_0.txt`). Vulkan was at 70% of CUDA on
+ternary and is now at 94%; on 1-bit it is ahead, 19.57 against 19.03.
+Sampling and dispatch are unchanged -- this is the weight kernel alone.
 
 ### DSpark is a net loss on Vulkan -- on every configuration
 
@@ -147,6 +162,24 @@ small dependent dispatch, and Vulkan's submit/synchronise cost is a far
 larger share of a step than a CUDA kernel launch. Degraded acceptance
 would have implied a drafter problem -- identical acceptance points at
 dispatch overhead.
+
+**The MMVQ result narrows this further.** That change lifted Vulkan native
+decode by 33% and left every DSpark cell flat (ternary 7.01 -> 6.81, 1-bit
+7.56 -> 8.20, acceptance unmoved). It could not have helped: verification
+submits a block of drafted tokens, so `n > 1` and the work routes through
+`mul_mm`, never touching the `mul_mat_vec` path that was optimised. So the
+speculative path is provably not weight-GEMV-bound on this backend, and the
+ratios got *worse* precisely because the denominator improved -- a cheaper
+target step raises the breakeven ratio `c` in `alpha > c`.
+
+That leaves two live candidates, and one of them is now concrete: Vulkan
+has no integer-dot **MMQ** path for `q1_0`/`q2_0` (the `mul_mmq.comp` gate
+at `vulkan-shaders-gen.cpp:594` excludes them), while CUDA's `mmq.cu`
+supports both. CUDA therefore verifies draft blocks with an integer-dot
+batch kernel and Vulkan dequantises to float. Whether closing that gap is
+enough to reach break-even is untested -- it would have to be worth ~2.4x
+on the verify step alone -- but it is a specific, checkable lever rather
+than an attribution to dispatch cost.
 
 This is the measurement the directive anticipated might be the Vulkan
 deliverable, and it is: speculative decoding as currently structured does
@@ -178,48 +211,68 @@ x86 AVX-512 is **not** tested -- Thor is ARM. The fork already carries
 AVX512-VNNI repack kernels for Q1_0 and Q2_0, so the code exists, but
 validating it needs a borrowed x86 host.
 
-### CPU reproduces the CUDA oracle; Vulkan does not
+### The Vulkan correctness gap was a RACE, and it is now root-caused
 
-Gated against the CUDA traces, the two non-CUDA backends fail in
-qualitatively different ways, and the difference matters:
+An earlier version of this section reported that Vulkan diverged from the
+CUDA oracle on 15/16 traces, 5 at token 0, and blamed `n_probs`. **That
+attribution was wrong in every part.** `n_probs` is irrelevant. The Vulkan
+backend was *nondeterministic*, so the gate was scoring a different roll of
+the dice on every run.
+
+Ten identical requests -- temperature 0, `top_k 1`, fixed seed,
+`cache_prompt=false`, one server process:
+
+| Backend | py-binsearch | cuda-reduce | review-restaurant | coastal-town |
+| :-- | --: | --: | --: | --: |
+| CUDA | 1 | 1 | 1 | 1 |
+| Vulkan | 2 | 7 | 8 | 3 |
+
+Distinct outputs from identical greedy requests. Vulkan returned **8
+different answers to the same question**.
+
+Bisected to one subsystem by toggling them one at a time on the same
+binary: coopmat, async and fusion all still fail 4/4;
+`GGML_VK_DISABLE_GRAPH_OPTIMIZE=1` passes 4/4. `ggml_vk_graph_optimize`
+reorders nodes to expose parallelism and judges independence with
+`is_src_of`, which sees only a direct `src[]` edge plus one level of
+`view_src`. It cannot see a write-after-read hazard on a shared buffer
+where neither node is the other's source -- and Bonsai carries recurrent
+state across 48 gated-delta-net layers, which is exactly that shape. The
+reorder itself is deterministic; what varies is what it lets run
+concurrently without a barrier.
+
+It is localised to **prefill**: with `cache_prompt=true` everything is
+stable, because prefill runs once and later requests replay cached KV. That
+is also why the bug is invisible at the server's defaults, and why
+`bench/gate_determinism.sh` forces caching off.
+
+**Fixing it costs 1-2%** -- interleaved A/B, three reps: prefill 371.2 ->
+362.9 (-2.2%), decode 16.2 -> 16.0 (-1.0%).
+
+With determinism enforced, re-capturing and re-gating against the same
+oracle:
 
 | Backend | traces reproducing oracle | worst drift on those | character |
-| :-- | :-- | --: | :-- |
+| :-- | --: | --: | :-- |
 | CPU (NEON) | 13/16 | 0.058 | numerical noise |
-| Vulkan | 1/16 | 3.586 | broken output |
+| Vulkan, racy (old) | 1/16 | 3.586 | broken output |
+| Vulkan, deterministic | 11/16 | 0.131 | numerical noise |
 
-CPU matches the oracle token-for-token on every code prompt and most
-prose prompts, with drift at the 0.01-0.06 level -- ordinary quant and
-reduction-order noise. Its 3 prose divergences are greedy tie-flips where
-accumulated noise crosses a near-equal choice, which is expected across
-different kernels. Vulkan, by contrast, diverges at token 0 on 5 traces
-and emits degenerate text. Different backends, different verdicts:
-**CPU is a credible backend, Vulkan is not yet.**
+No trace diverges at token 0 any more, all 16 produce a full 128 tokens,
+and the 5 remaining divergences sit at tokens 29-96 -- mid-generation
+greedy tie-flips, the same character as the CPU backend's 3. **Vulkan is
+now the same kind of backend as CPU rather than a broken one**, which
+retires the earlier verdict that "CPU is a credible backend, Vulkan is
+not yet."
 
-(An earlier version of this gate reported CPU as 16/16 divergent. That was
-a bug in the comparison tool, which counted the CPU run's shorter output
-as divergence rather than as a prefix. Fixed; the tool now reports
-`PREFIX-MATCH`.)
+The gate still reports FAIL at its 0.05 tolerance. That is correct and
+should stay: 5 real divergences remain and are not explained.
 
-### Vulkan correctness is NOT established
-
-Gated against the CUDA oracle, 15/16 traces diverge, 5 of them at token 0.
-Two distinct problems:
-
-- **With `n_probs` requested, Vulkan degenerates** -- it emits
-  `{\n{\n{\n{...` where CUDA emits correct code. This is what fails the
-  gate, and it affects the trace-capture path.
-- **Without `n_probs` it is broadly sane** -- output lengths track CUDA
-  across nearly every prompt, so the throughput numbers above stand. But
-  one prompt still terminates after a single empty token on ternary where
-  CUDA generates normally.
-
-So: Vulkan performance is reportable here, Vulkan correctness is not. The
-fork ships a `test-vulkan-q2_0-shader-sim`, so Q2_0 support is intended,
-which makes this look like a real gap in the fork's Vulkan path for
-Bonsai's low-bit formats rather than an unsupported setup. Worth
-reporting upstream -- by a human, since the fork does not accept
-AI-generated contributions.
+Worth stating plainly: a correctness gate run against a nondeterministic
+backend does not measure correctness. "15/16" was never a property of the
+Vulkan kernels -- it was one sample, and re-running it would have given a
+different number. **Establish determinism before running any comparison
+gate.** Full write-up: `results/vulkan-nondeterminism.txt`.
 
 ## Energy per token (Phase 6)
 

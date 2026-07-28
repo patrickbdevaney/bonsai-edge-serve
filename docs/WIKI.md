@@ -33,6 +33,8 @@ hardware backs it. Everything else lives under Open Questions.
 | W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `a47598b` |
 | W15 | **Vulkan q1_0 MMVQ + multiply bit-spread** | tg128 **15.39 -> 19.03 tok/s (+23.7%)**; matches CUDA's 19.03 on this model | `ae75cd9` |
 | W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `ae75cd9` |
+| W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `pending` |
+| W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `pending` |
 
 ---
 
@@ -184,6 +186,64 @@ Corollary that saved a bug: the same multiply trick does NOT work for Q2_0
 That was checked exhaustively *before* assuming symmetry between the two
 formats. The Q1_0 form was likewise verified over all 65536 x 4 inputs.
 Both checks cost seconds in Python and one of them found a real defect.
+
+### L9. A gate run against a nondeterministic system measures nothing
+
+The repo recorded, with confidence and a table: Vulkan diverges from the
+CUDA oracle on 15/16 traces, 5 at token 0, cause = `n_probs`. Every part of
+that was wrong, and the last part was unfixable by careful measurement,
+because **the system under test had no fixed answer to give.**
+
+Ten identical greedy requests -- temperature 0, `top_k 1`, fixed seed, one
+server process -- returned up to **8 distinct outputs** on Vulkan and
+exactly 1 on CUDA. "15/16" was one sample from a distribution.
+
+How it unravelled, in order, because the order is the lesson:
+
+1. The reported symptom would not reproduce. `n_probs=0` and `n_probs=5`
+   gave *identical* output. So `n_probs` was not the variable.
+2. The failing prompt (`code/cuda-reduce`) came back **correct**. Tempting
+   read: "our MMVQ work fixed it." Checked instead -- correct with MMVQ
+   disabled too, and correct on the *old* build. Not our fix.
+3. The old build then produced `, , , , ,` where its own stored trace had
+   `The bistro is the bistro`. Two different degenerate outputs from the
+   same binary and prompt. That is not a bug that comes and goes; that is a
+   race, and at that point the question changed from "which prompt fails?"
+   to "is this thing deterministic at all?"
+
+Step 2 is the one worth internalising. A bug that disappears right after
+you change something is the single most seductive false positive
+available, and the cost of checking was one server start.
+
+Root cause: `ggml_vk_graph_optimize` reorders nodes for parallelism and
+judges independence with `is_src_of`, which sees a direct `src[]` edge plus
+one level of `view_src`. It cannot see a write-after-read hazard on a
+shared buffer where neither node is the other's source -- and Bonsai
+carries recurrent state through 48 gated-delta-net layers, exactly that
+shape. The reorder is itself deterministic; what varies is what it permits
+to run concurrently without a barrier. (A `std::set<ggml_tensor *>` in the
+same function is the textbook pointer-ordering suspect, and was checked and
+cleared: only `insert`/`find`, never iterated.)
+
+`GGML_VK_DISABLE_GRAPH_OPTIMIZE=1` fixes it for 2.2% prefill and 1.0%
+decode, and takes the trace gate from 1/16 reproducing to 11/16 with no
+token-0 divergence and no degenerate output -- putting Vulkan in the same
+class as CPU's 13/16 instead of "broken".
+
+Two durable practices, now in `bench/gate_determinism.sh`:
+
+- **Establish determinism before running any comparison gate.** One extra
+  run, and without it a divergence count is not reproducible and therefore
+  not a measurement. This should have been the first gate ever written in
+  this repo, not the ninth.
+- **Force `cache_prompt=false` when testing for it.** The server default is
+  TRUE, prefill then runs once and every later request replays cached KV,
+  and the race hides behind a cache hit -- the system looks perfectly
+  deterministic while nothing is fixed. The bug lived in the default.
+
+Related: interleave A/B arms. Measuring the two arms in separate sessions
+gave 15.76 vs 16.17 tok/s from *drift alone*, 2.6%, which would have buried
+the real 1.0% effect or reversed its sign.
 
 ### L8. A gate whose failure mode is silence BY DESIGN
 

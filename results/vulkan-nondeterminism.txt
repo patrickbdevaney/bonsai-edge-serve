@@ -1,0 +1,130 @@
+The Vulkan correctness gap: root-caused, and it was not what we said
+=====================================================================
+
+The repo previously recorded, under "Vulkan correctness is NOT
+established": 15/16 traces diverge from the CUDA oracle, 5 at token 0,
+degenerate `{\n{\n{` output, attributed to **`n_probs`**.
+
+**Every part of that attribution was wrong.** `n_probs` is irrelevant. The
+Vulkan backend was NONDETERMINISTIC, so the trace comparison was scoring a
+different roll of the dice each time it ran.
+
+THE MEASUREMENT
+---------------
+Ten identical requests, temperature 0, top_k 1, fixed seed,
+`cache_prompt=false`, same server process, same build:
+
+  backend                       distinct outputs over 10 greedy runs
+                          py-binsearch  cuda-reduce  review-rest.  coastal
+  CUDA (oracle)                      1            1             1        1
+  Vulkan, build-vulkan  (old)        2            2             3        2
+  Vulkan, build-vulkan2 (MMVQ)       2            7             8        3
+
+CUDA is stable on all four. Vulkan produces up to **8 different outputs
+from 10 identical greedy requests**. Greedy decoding at temperature 0 with
+a fixed seed is supposed to be a pure function of the weights and prompt.
+
+This also explains why the original degeneration would not reproduce: the
+first attempts at `code/cuda-reduce` came back correct, and the old build
+produced `, , , , ,` where its own stored trace had `The bistro is the
+bistro`. Not a fixed bug and not a flaky prompt -- a race.
+
+ROOT CAUSE: THE graph_optimize REORDER PASS
+--------------------------------------------
+Bisected by toggling one subsystem at a time on the same binary:
+
+  configuration                              nondeterministic prompts
+  default                                              4/4
+  GGML_VK_DISABLE_COOPMAT=1                            4/4
+  GGML_VK_DISABLE_ASYNC=1                              4/4
+  GGML_VK_DISABLE_FUSION=1                             4/4
+  GGML_VK_DISABLE_GRAPH_OPTIMIZE=1                     0/4   <-- fix
+  ubatch 16 (default opt)                              4/4
+
+`ggml_vk_graph_optimize` (ggml-vulkan.cpp:15922) reorders graph nodes to
+expose parallelism, using `is_src_of` to decide independence.
+
+Note the reorder itself is a deterministic function of the graph, so the
+nondeterminism is not in the ordering choice -- it is in what the resulting
+order permits to run CONCURRENTLY. `is_src_of` models only a direct `src[]`
+edge plus a single level of `view_src` aliasing. It cannot see a
+write-after-read or write-after-write hazard on a shared buffer where
+neither node is a source of the other. Bonsai has 48 gated-delta-net layers
+carrying recurrent state, which is exactly the shape that produces such
+hazards. Two nodes judged independent get dispatched without an
+intervening barrier, and the result depends on which finishes first.
+
+A pointer-ordering explanation was checked and rejected: `used_node_set` is
+a `std::set<ggml_tensor *>`, which would be a classic nondeterminism
+source, but it is only ever `insert`ed and `find`ed, never iterated, so
+pointer values cannot leak into the output order.
+
+The precise missing hazard edge is NOT identified. What is established is
+the subsystem, the reproduction, and the fix.
+
+LOCALISED TO PREFILL
+--------------------
+With `cache_prompt=true` the same test gives 1 distinct output everywhere.
+Prefill then runs once and every later request replays cached KV, so a
+prefill race is hidden behind a cache hit. Decode (n=1) is deterministic;
+the batched path is not.
+
+That is also a warning about the gate itself: `cache_prompt` defaults to
+TRUE in the server, and with the default this bug is invisible. The gate
+forces it off.
+
+COST OF THE FIX: 1-2%
+---------------------
+Interleaved A/B (on/off/on/off/on/off) to control for between-session
+drift:
+
+  rep   graph_opt=on          graph_opt=off
+        pp512    tg64         pp512    tg64
+   1    371.1    16.2         363.0    16.0
+   2    371.2    16.2         362.8    16.0
+   3    371.3    16.1         362.8    16.0
+
+  -> prefill -2.2%, decode -1.0%, both reproducible.
+
+Interleaving mattered. A first attempt measured the two arms in separate
+sessions and saw tg128 15.76 vs 16.17 between sessions -- a 2.6% drift that
+would have swamped the 1.0% effect entirely, and could as easily have
+produced a "disabling it makes things FASTER" result. Small deltas between
+separate llama-bench invocations are not resolvable on this box; interleave
+or do not claim them.
+
+WHAT IT BUYS: 15/16 DIVERGENT -> 5/16
+--------------------------------------
+Re-capturing the traces with determinism enforced and re-gating against the
+same CUDA oracle:
+
+  before (racy)     1/16 reproducing, 5 diverging at token 0,
+                    degenerate `{\n{\n{` and empty outputs
+  after  (fixed)   11/16 reproducing, 0 diverging at token 0,
+                    all 16 produce a full 128 tokens
+
+  matched traces: max|dlogprob| 0.030 - 0.131
+  the 5 divergences: at tokens 29, 37, 41, 78, 96 -- mid-generation
+  greedy tie-flips, the same character as the CPU backend's 3/16
+
+For comparison the CPU (NEON) backend reproduces 13/16 with worst drift
+0.058. **Vulkan is now the same kind of backend as CPU -- ordinary
+reduction-order noise -- rather than a broken one.** The README's verdict
+that "CPU is a credible backend, Vulkan is not yet" no longer holds.
+
+The gate still reports FAIL at its 0.05 tolerance, which is correct and
+should stay: 5 real divergences remain and they are not explained.
+
+WHY THE OLD NUMBER WAS UNTRUSTWORTHY IN PRINCIPLE
+--------------------------------------------------
+A correctness gate run against a nondeterministic backend does not measure
+correctness. "15/16 divergent" was not a property of the Vulkan kernels; it
+was one sample from a distribution, and re-running it would have produced a
+different number. This is the third entry in this repo's ledger where a
+confident measurement was of the wrong thing -- and the first where the
+measurement could not have been right no matter how carefully it was taken,
+because the system under test had no fixed answer to give.
+
+Generalizable: **establish determinism BEFORE running any comparison
+gate.** A gate result is only meaningful if repeating it returns the same
+number. That check costs one extra run and it should come first.
