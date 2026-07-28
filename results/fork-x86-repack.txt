@@ -1,0 +1,29 @@
+== PrismML fork, x86 AVX2 repack (patch 0005) vs generic path ==
+== host i9-14900HX, t=8, model: Qwen3.5-4B requantized (pipeline/perf validation only; 2-bit requantization without QAT produces garbage text by design) ==
+
+== q2_0, AVX2 repack ==
+| qwen35 4B Q2_0                 |   1.37 GiB |     4.21 B | CPU        |       8 |           pp512 |         23.77 ± 0.94 |
+| qwen35 4B Q2_0                 |   1.37 GiB |     4.21 B | CPU        |       8 |           tg128 |          8.60 ± 0.22 |
+== q2_0, generic (repack off) ==
+| qwen35 4B Q2_0                 |   1.37 GiB |     4.21 B | CPU        |       8 |           pp512 |          7.07 ± 0.01 |
+| qwen35 4B Q2_0                 |   1.37 GiB |     4.21 B | CPU        |       8 |           tg128 |          4.77 ± 0.06 |
+== q1_0, AVX2 repack ==
+| qwen35 4B Q1_0                 | 979.63 MiB |     4.21 B | CPU        |       8 |           pp512 |         24.23 ± 0.79 |
+| qwen35 4B Q1_0                 | 979.63 MiB |     4.21 B | CPU        |       8 |           tg128 |          9.62 ± 1.25 |
+== q1_0, generic (repack off) ==
+| qwen35 4B Q1_0                 | 979.63 MiB |     4.21 B | CPU        |       8 |           pp512 |         25.41 ± 0.81 |
+| qwen35 4B Q1_0                 | 979.63 MiB |     4.21 B | CPU        |       8 |           tg128 |          9.98 ± 0.16 |
+
+== q1_0 selection subsequently disabled (parity with existing vec_dot; see patch comment) ==
+
+== kernel validation: run_fork_repack_test.sh ==
+shape sweep (K x NC x NR), 4 kernels + 16 degenerate cases each:
+  100 shapes, 0 kernel checks failed
+
+detail at K=512 nc=32 nr=8:
+  gemv q2_0 4x8  K=512   nr=1   nc=32   err/|ref|max 0.000e+00 (elemwise 0.000e+00)  OK
+  gemm q2_0 4x8  K=512   nr=8   nc=32   err/|ref|max 0.000e+00 (elemwise 0.000e+00)  OK
+  gemv q1_0 4x8  K=512   nr=1   nc=32   err/|ref|max 0.000e+00 (elemwise 0.000e+00)  OK
+  gemm q1_0 4x8  K=512   nr=8   nc=32   err/|ref|max 0.000e+00 (elemwise 0.000e+00)  OK
+
+RESULT: all passed

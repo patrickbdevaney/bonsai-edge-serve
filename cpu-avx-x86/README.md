@@ -23,3 +23,11 @@ exactly what that costs. BLAS is the control, not the contender.
 
 Kernel work lives in ../kernels/cpu-avx-x86/. See ../kernels/README.md
 for measured numbers and ../results/gemv-avx-x86.txt for the raw log.
+
+The fork integration is ../patches/0005-cpu-x86-avx2-repack.patch
+(mirror of the ARM patch 0004): AVX2/AVX-VNNI branches for the fork's
+q1_0/q2_0 4x8 repack kernels, which were AVX-512-gated and therefore
+dead on this class of machine. Validated bit-exact against the generic
+reference by ../kernels/cpu-avx-x86/run_fork_repack_test.sh; measured
+3.4x prefill / 1.8x decode for q2_0 in llama-bench. q1_0 measured at
+parity with its existing vec_dot and is deliberately not selected.

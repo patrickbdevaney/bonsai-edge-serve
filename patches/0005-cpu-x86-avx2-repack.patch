@@ -1,0 +1,339 @@
+diff --git a/ggml/src/ggml-cpu/arch/x86/repack.cpp b/ggml/src/ggml-cpu/arch/x86/repack.cpp
+index 480f1b1..ddc5114 100644
+--- a/ggml/src/ggml-cpu/arch/x86/repack.cpp
++++ b/ggml/src/ggml-cpu/arch/x86/repack.cpp
+@@ -6452,6 +6452,64 @@ static inline void __q2_0_expand_x4(const uint8_t * qs, __m512i * w01, __m512i *
+ }
+ #endif // AVX512 VNNI
+ 
++#if defined(__AVX2__)
++// AVX2 / AVX-VNNI helpers for the Q1_0/Q2_0 4-column interleaved
++// kernels -- the VEX-width mirror of the AVX512 block above, for parts
++// like consumer Raptor Lake where AVX-512 is fused off. One 256-bit
++// vector holds one column's 32-value sub-block; each output row keeps
++// four per-column fp32 accumulators reduced once per tile.
++//
++// The dot step is u8 x s8 -> s32. With AVX-VNNI that is VPDPBUSD; on
++// plain AVX2 the same contraction is VPMADDUBSW + VPMADDWD, exact here
++// because codes <= 3 and |a| <= 127 keep the s16 intermediate at 762.
++static inline __m256i __bonsai_dpbusd(__m256i acc, __m256i u, __m256i s) {
++#if defined(__AVXVNNI__)
++    return _mm256_dpbusd_avx_epi32(acc, u, s);
++#elif defined(__AVX512VNNI__) && defined(__AVX512VL__)
++    return _mm256_dpbusd_epi32(acc, u, s);
++#else
++    return _mm256_add_epi32(acc, _mm256_madd_epi16(
++        _mm256_maddubs_epi16(u, s), _mm256_set1_epi16(1)));
++#endif
++}
++
++static inline float __bonsai_hsum_ps(__m256 v) {
++    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
++    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
++    s = _mm_add_ss(s, _mm_movehdup_ps(s));
++    return _mm_cvtss_f32(s);
++}
++
++// Expand column c's 8 packed bytes of a q2_0x4 32-value sub-block
++// (layout: bytes 8c..8c+7) to 32 {0..3} code bytes in natural order.
++static inline __m256i __q2_0_expand_col(const uint8_t * qs, int c) {
++    const __m256i m3 = _mm256_set1_epi8(0x03);
++    const __m256i v  = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) (qs + 8 * c)));
++    const __m256i r  = _mm256_or_si256(_mm256_or_si256(v, _mm256_slli_epi32(v, 6)),
++                                       _mm256_or_si256(_mm256_slli_epi32(v, 12),
++                                                       _mm256_slli_epi32(v, 18)));
++    return _mm256_and_si256(r, m3);
++}
++
++// Expand column c of a q1_0x4 32-value sub-block (byte 4j + c = bits
++// for values 8j..8j+7 of column c) to 32 {0,1} bytes. The shuffle
++// replicates each source byte across 8 lanes; the cmpeq against the
++// per-lane bit mask turns bit i into byte {0,1}.
++static inline __m256i __q1_0_expand_col(__m256i bits2x128, int c) {
++    const __m256i bitmask = _mm256_set1_epi64x((long long) 0x8040201008040201ull);
++    // lane 0 wants source bytes c and c+4; lane 1 wants c+8 and c+12,
++    // but shuffle indexes within each 128-bit lane, and both lanes hold
++    // the same 16 source bytes (broadcast), so the mask is per-lane.
++    const __m256i sel = _mm256_setr_epi8(
++        c, c, c, c, c, c, c, c, c + 4, c + 4, c + 4, c + 4, c + 4, c + 4, c + 4, c + 4,
++        c + 8, c + 8, c + 8, c + 8, c + 8, c + 8, c + 8, c + 8,
++        c + 12, c + 12, c + 12, c + 12, c + 12, c + 12, c + 12, c + 12);
++    const __m256i rep = _mm256_shuffle_epi8(bits2x128, sel);
++    const __m256i hit = _mm256_cmpeq_epi8(_mm256_and_si256(rep, bitmask), bitmask);
++    return _mm256_and_si256(hit, _mm256_set1_epi8(1));
++}
++#endif // __AVX2__
++
+ void ggml_gemv_q1_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+ #if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__)
+     {
+@@ -6504,7 +6562,54 @@ void ggml_gemv_q1_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
+         }
+         return;
+     }
+-#endif // AVX512 VNNI
++#elif defined(__AVX2__)
++    {
++        const int qk = QK1_0;
++        const int nb = n / qk;
++
++        assert(nr == 1);
++        assert(n % qk == 0);
++        assert(nc % 4 == 0);
++        UNUSED(bs);
++
++        const __m256i ones = _mm256_set1_epi8(1);
++
++        const block_q8_0 * a_ptr = (const block_q8_0 *) vy;
++        for (int x = 0; x < nc / 4; x++) {
++            const block_q1_0x4 * b_ptr = (const block_q1_0x4 *) vx + (x * nb);
++
++            __m256 accf[4];
++            for (int c = 0; c < 4; ++c) accf[c] = _mm256_setzero_ps();
++
++            for (int l = 0; l < nb; l++) {
++                float d0[4];
++                for (int c = 0; c < 4; ++c) d0[c] = GGML_CPU_FP16_TO_FP32(b_ptr[l].d[c]);
++
++                for (int k = 0; k < QK1_0 / QK8_0; ++k) {
++                    const block_q8_0 * GGML_RESTRICT a_blk = a_ptr + l * (QK1_0 / QK8_0) + k;
++
++                    const __m256i qa = _mm256_loadu_si256((const __m256i *) a_blk->qs);
++                    const __m256i sq = __bonsai_dpbusd(_mm256_setzero_si256(), ones, qa);
++                    const __m256i bits = _mm256_broadcastsi128_si256(
++                        _mm_loadu_si128((const __m128i *) (b_ptr[l].qs + 16 * k)));
++                    const float d1 = GGML_CPU_FP16_TO_FP32(a_blk->d);
++
++                    for (int c = 0; c < 4; ++c) {
++                        const __m256i w = __q1_0_expand_col(bits, c);
++                        const __m256i i = __bonsai_dpbusd(_mm256_setzero_si256(), w, qa);
++                        // 2*dot(bits, qy) - sum(qy)
++                        const __m256 f = _mm256_cvtepi32_ps(
++                            _mm256_sub_epi32(_mm256_add_epi32(i, i), sq));
++                        accf[c] = _mm256_fmadd_ps(f, _mm256_set1_ps(d0[c] * d1), accf[c]);
++                    }
++                }
++            }
++
++            for (int c = 0; c < 4; ++c) s[x * 4 + c] = __bonsai_hsum_ps(accf[c]);
++        }
++        return;
++    }
++#endif // AVX512 VNNI / AVX2
+ 
+     ggml_gemv_q1_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
+ }
+@@ -6578,7 +6683,63 @@ void ggml_gemm_q1_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
+         }
+         return;
+     }
+-#endif // AVX512 VNNI
++#elif defined(__AVX2__)
++    {
++        const int qk = QK1_0;
++        const int nb = n / qk;
++
++        assert(n % qk == 0);
++        assert(nr % 4 == 0);
++        assert(nc % 4 == 0);
++
++        const __m256i ones = _mm256_set1_epi8(1);
++
++        for (int y = 0; y < nr / 4; y++) {
++            const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (4 * y * nb);
++            for (int x = 0; x < nc / 4; x++) {
++                const block_q1_0x4 * b_ptr = (const block_q1_0x4 *) vx + (x * nb);
++
++                __m256 accf[4][4];
++                for (int m = 0; m < 4; m++)
++                    for (int c = 0; c < 4; ++c) accf[m][c] = _mm256_setzero_ps();
++
++                for (int l = 0; l < nb; l++) {
++                    float d0[4];
++                    for (int c = 0; c < 4; ++c) d0[c] = GGML_CPU_FP16_TO_FP32(b_ptr[l].d[c]);
++
++                    for (int k = 0; k < QK1_0 / QK8_0; ++k) {
++                        const block_q8_0x4 * GGML_RESTRICT a_blk = a_ptr + 4 * l + k;
++                        const long long * aq = (const long long *) a_blk->qs;
++
++                        const __m256i bits = _mm256_broadcastsi128_si256(
++                            _mm_loadu_si128((const __m128i *) (b_ptr[l].qs + 16 * k)));
++                        __m256i w[4];
++                        for (int c = 0; c < 4; ++c) w[c] = __q1_0_expand_col(bits, c);
++
++                        for (int m = 0; m < 4; ++m) {
++                            // row m of the x4 interleave: qwords {m, 4+m, 8+m, 12+m}
++                            const __m256i qa = _mm256_set_epi64x(aq[12 + m], aq[8 + m],
++                                                                 aq[ 4 + m], aq[m]);
++                            const __m256i sq = __bonsai_dpbusd(_mm256_setzero_si256(), ones, qa);
++                            const float dd = GGML_CPU_FP16_TO_FP32(a_blk->d[m]);
++                            for (int c = 0; c < 4; ++c) {
++                                const __m256i i = __bonsai_dpbusd(_mm256_setzero_si256(), w[c], qa);
++                                const __m256 f = _mm256_cvtepi32_ps(
++                                    _mm256_sub_epi32(_mm256_add_epi32(i, i), sq));
++                                accf[m][c] = _mm256_fmadd_ps(f, _mm256_set1_ps(d0[c] * dd), accf[m][c]);
++                            }
++                        }
++                    }
++                }
++
++                for (int m = 0; m < 4; m++)
++                    for (int c = 0; c < 4; ++c)
++                        s[(y * 4 + m) * bs + x * 4 + c] = __bonsai_hsum_ps(accf[m][c]);
++            }
++        }
++        return;
++    }
++#endif // AVX512 VNNI / AVX2
+ 
+     ggml_gemm_q1_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
+ }
+@@ -6635,7 +6796,52 @@ void ggml_gemv_q2_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
+         }
+         return;
+     }
+-#endif // AVX512 VNNI
++#elif defined(__AVX2__)
++    {
++        const int qk = QK2_0;
++        const int nb = n / qk;
++
++        assert(nr == 1);
++        assert(n % qk == 0);
++        assert(nc % 4 == 0);
++        UNUSED(bs);
++
++        const __m256i ones = _mm256_set1_epi8(1);
++
++        const block_q8_0 * a_ptr = (const block_q8_0 *) vy;
++        for (int x = 0; x < nc / 4; x++) {
++            const block_q2_0x4 * b_ptr = (const block_q2_0x4 *) vx + (x * nb);
++
++            __m256 accf[4];
++            for (int c = 0; c < 4; ++c) accf[c] = _mm256_setzero_ps();
++
++            for (int l = 0; l < nb; l++) {
++                float d0[4];
++                for (int c = 0; c < 4; ++c) d0[c] = GGML_CPU_FP16_TO_FP32(b_ptr[l].d[c]);
++
++                for (int k = 0; k < QK2_0 / QK8_0; ++k) {
++                    const block_q8_0 * GGML_RESTRICT a_blk = a_ptr + l * (QK2_0 / QK8_0) + k;
++
++                    const __m256i qa = _mm256_loadu_si256((const __m256i *) a_blk->qs);
++                    const __m256i sq = __bonsai_dpbusd(_mm256_setzero_si256(), ones, qa);
++                    const uint8_t * qs = (const uint8_t *) b_ptr[l].qs + 32 * k;
++                    const float d1 = GGML_CPU_FP16_TO_FP32(a_blk->d);
++
++                    for (int c = 0; c < 4; ++c) {
++                        const __m256i w = __q2_0_expand_col(qs, c);
++                        const __m256i i = __bonsai_dpbusd(_mm256_setzero_si256(), w, qa);
++                        // dot(codes, qy) - sum(qy), codes-1 in {-1,0,1,2}
++                        const __m256 f = _mm256_cvtepi32_ps(_mm256_sub_epi32(i, sq));
++                        accf[c] = _mm256_fmadd_ps(f, _mm256_set1_ps(d0[c] * d1), accf[c]);
++                    }
++                }
++            }
++
++            for (int c = 0; c < 4; ++c) s[x * 4 + c] = __bonsai_hsum_ps(accf[c]);
++        }
++        return;
++    }
++#endif // AVX512 VNNI / AVX2
+ 
+     ggml_gemv_q2_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
+ }
+@@ -6709,7 +6915,60 @@ void ggml_gemm_q2_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const vo
+         }
+         return;
+     }
+-#endif // AVX512 VNNI
++#elif defined(__AVX2__)
++    {
++        const int qk = QK2_0;
++        const int nb = n / qk;
++
++        assert(n % qk == 0);
++        assert(nr % 4 == 0);
++        assert(nc % 4 == 0);
++
++        const __m256i ones = _mm256_set1_epi8(1);
++
++        for (int y = 0; y < nr / 4; y++) {
++            const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (4 * y * nb);
++            for (int x = 0; x < nc / 4; x++) {
++                const block_q2_0x4 * b_ptr = (const block_q2_0x4 *) vx + (x * nb);
++
++                __m256 accf[4][4];
++                for (int m = 0; m < 4; m++)
++                    for (int c = 0; c < 4; ++c) accf[m][c] = _mm256_setzero_ps();
++
++                for (int l = 0; l < nb; l++) {
++                    float d0[4];
++                    for (int c = 0; c < 4; ++c) d0[c] = GGML_CPU_FP16_TO_FP32(b_ptr[l].d[c]);
++
++                    for (int k = 0; k < QK2_0 / QK8_0; ++k) {
++                        const block_q8_0x4 * GGML_RESTRICT a_blk = a_ptr + 4 * l + k;
++                        const long long * aq = (const long long *) a_blk->qs;
++
++                        const uint8_t * qs = (const uint8_t *) b_ptr[l].qs + 32 * k;
++                        __m256i w[4];
++                        for (int c = 0; c < 4; ++c) w[c] = __q2_0_expand_col(qs, c);
++
++                        for (int m = 0; m < 4; ++m) {
++                            const __m256i qa = _mm256_set_epi64x(aq[12 + m], aq[8 + m],
++                                                                 aq[ 4 + m], aq[m]);
++                            const __m256i sq = __bonsai_dpbusd(_mm256_setzero_si256(), ones, qa);
++                            const float dd = GGML_CPU_FP16_TO_FP32(a_blk->d[m]);
++                            for (int c = 0; c < 4; ++c) {
++                                const __m256i i = __bonsai_dpbusd(_mm256_setzero_si256(), w[c], qa);
++                                const __m256 f = _mm256_cvtepi32_ps(_mm256_sub_epi32(i, sq));
++                                accf[m][c] = _mm256_fmadd_ps(f, _mm256_set1_ps(d0[c] * dd), accf[m][c]);
++                            }
++                        }
++                    }
++                }
++
++                for (int m = 0; m < 4; m++)
++                    for (int c = 0; c < 4; ++c)
++                        s[(y * 4 + m) * bs + x * 4 + c] = __bonsai_hsum_ps(accf[m][c]);
++            }
++        }
++        return;
++    }
++#endif // AVX512 VNNI / AVX2
+ 
+     ggml_gemm_q2_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
+ }
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+index 02a562b..d750c46 100644
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -5348,6 +5348,11 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+                 return &q1_0_4x8_q8_0;
+             }
+         }
++        // No AVX2-tier selection for q1_0: measured parity with the
++        // existing x86 vec_dot path (llama-bench tg128 9.6 vs 10.0,
++        // pp512 24.2 vs 25.4 on i9-14900HX), matching the ARM finding
++        // that 1-bit gains nothing from this kernel shape. The AVX2
++        // 4x8 kernels exist and validate; they are just not selected.
+         // EXPERIMENT (bonsai-edge-serve): Q1_0 has ARM repack kernels and
+         // Q2_0 does not. Turning Q1_0's off measures what the repack path is
+         // actually worth on this core, which is what decides whether writing
+@@ -5387,6 +5392,16 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+                 return &q2_0_4x8_q8_0;
+             }
+         }
++        // AVX2 tier (bonsai-edge-serve): consumer parts with AVX-512
++        // fused off (e.g. Raptor Lake) otherwise take the vec_dot path,
++        // measured 3.4x slower at pp512 and 1.8x at tg128 than these
++        // kernels' VEX branch (llama-bench, i9-14900HX).
++        // BONSAI_NO_ARM_REPACK doubles as the generic-path A/B switch.
++        if (!getenv("BONSAI_NO_ARM_REPACK") && ggml_cpu_has_avx2()) {
++            if (cur->ne[1] % 4 == 0) {
++                return &q2_0_4x8_q8_0;
++            }
++        }
+         if (getenv("BONSAI_NO_ARM_REPACK")) {
+             return nullptr;
+         }

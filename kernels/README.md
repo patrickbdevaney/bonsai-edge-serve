@@ -483,6 +483,36 @@ unpack ALU that halving the bytes pays in full. For comparison, fp32 at
 the same ceiling would be ~0.3 tok/s: the format is the difference
 between "unusable" and "usable-slow" on commodity x86.
 
+### Beyond benches: the fork now runs these kernels (patch 0005)
+
+`patches/0005-cpu-x86-avx2-repack.patch` ports the approach into the
+PrismML fork's CPU backend -- the x86 mirror of the ARM patch 0004. The
+fork's q1_0/q2_0 4x8 repack kernels were gated on AVX-512 VNNI, so on
+consumer parts (AVX-512 fused off) both formats fell through to the
+vec_dot path. The patch adds VEX-width branches: `VPDPBUSD` via
+AVX-VNNI with an exact `VPMADDUBSW` fallback, one 256-bit vector per
+interleaved column, the same biased-encoding identity.
+
+Validation is the ARM test's philosophy, not a model run:
+`cpu-avx-x86/run_fork_repack_test.sh` links the fork's real
+`libggml-cpu.so` and compares all four kernels against the generic
+reference they replace over 100 shapes plus degenerate all-same-code
+weights -- **bit-exact, 0.000e+00, 2000 checks**. End to end
+(llama-bench, a 4B model requantized to the Bonsai formats -- garbage
+text by design, valid timing):
+
+| format | pp512 | tg128 | note |
+| :-- | --: | --: | :-- |
+| q2_0 repack vs vec_dot | **23.8 vs 7.1 (3.4x)** | **8.6 vs 4.8 (1.8x)** | selected on AVX2 |
+| q1_0 repack vs vec_dot | 24.2 vs 25.4 | 9.6 vs 10.0 | parity: NOT selected |
+
+The q1_0 outcome repeats the ARM lesson a third time: 1-bit gains
+nothing from this kernel shape, because its existing vec_dot is already
+good -- so the patch selects the AVX2 tier for **q2_0 only** and says
+why in the selection comment. Raw log in
+`../results/fork-x86-repack.txt`; the kernels themselves live in the
+patch, tested from this directory.
+
 ### Decode-step proxy: the roofline survives the real schedule
 
 `decode_step_bench.c` runs every GEMV a token actually costs -- the
