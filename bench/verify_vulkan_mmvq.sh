@@ -69,8 +69,10 @@ fi
 
 # Gate 4: K_PER_ITER size class. Without this the shader hits
 # "#error unimplemented" and never compiles.
-check "comp: q2_0 joins the K_PER_ITER 16 class" 1 \
-      "$SH/mul_mat_vecq.comp" "defined(DATA_A_QUANT_K) || defined(DATA_A_Q2_0)"
+# q1_0/q2_0 sit in the 32-quant class so each call issues a wider load
+# (Q2_0: two consecutive uint32 = 227.9 GB/s vs 180.6 for one).
+check "comp: q2_0 joins the K_PER_ITER 32 class" 1 \
+      "$SH/mul_mat_vecq.comp" "DATA_A_IQ1_M) || defined(DATA_A_Q2_0)"
 
 # Gate 5: shader generation lists.
 check "gen: q2_0 in the MMVQ generate list" 1 \
@@ -108,7 +110,7 @@ check "types: A_TYPE_PACKED16 defined for q1_0" 1 \
       "$SH/types.glsl" "define A_TYPE_PACKED16 block_q1_0_packed16"
 check "funcs: q1_0_codes extraction" 1 \
       "$SH/mul_mat_vecq_funcs.glsl" "q1_0_codes"
-check "comp: q1_0 joins the K_PER_ITER 16 class" 1 \
+check "comp: q1_0 joins the K_PER_ITER 32 class" 1 \
       "$SH/mul_mat_vecq.comp" "defined(DATA_A_Q1_0)"
 check "gen: q1_0 in the MMVQ generate list" 1 \
       "$SH/vulkan-shaders-gen.cpp" 'tname == "q1_0"'

@@ -175,6 +175,7 @@ int main(int argc, char **argv) {
         // words -- so the whole buffer is read exactly once, and the byte
         // accounting below is honest. Setting this to 16 credits the run
         // with 4x the bytes it actually touched and reports ~1 TB/s.
+        {"2x consecutive uint   ", "bandwidth_scalar2.spv", 4},
         {"4x consecutive uint   ", "bandwidth_scalar4.spv", 4},
     };
 

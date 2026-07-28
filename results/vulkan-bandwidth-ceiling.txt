@@ -110,6 +110,33 @@ where WIDE4 does nothing; the K=17408 FFN-down projection is the one that
 gains, and it is also currently the slowest ggml shape at 89.7-90.8 GB/s in
 our harness. A shape-adaptive kernel captures that piece and not the rest.
 
+SHIPPED: THE 32-QUANT CLASS CAPTURES MOST OF IT
+------------------------------------------------
+Four consecutive words is the best access pattern but spans two q8_1 blocks,
+and ggml's mmvq framework carries one b-scale per call -- so it cannot be
+had without changing the contract for every other quant type. Two words can:
+
+  one 32-bit word per lane, lane-strided   180.6 GB/s
+  TWO consecutive words per lane           227.9 GB/s   <- fits the framework
+  four consecutive / uvec4                 241-249 GB/s
+
+So q1_0 and q2_0 were moved from the 16-quant class to the 32-quant class
+(the one IQ1_S/IQ1_M already use). At 32 quants per call, Q2_0 loads two
+consecutive uint32 and Q1_0 loads one -- against one and a half words
+respectively in the 16-quant class.
+
+End to end, decode tok/s:
+
+  model     MMVQ off   16-quant class   32-quant class   vs baseline
+  Q2_0        11.63        15.76            16.75          +44.0%
+  Q1_0        15.51        19.03            20.27          +30.7%
+
+Numerically gated at 28 OK / 0 FAIL for both types against the CPU
+reference, and generation output is correct.
+
+For scale, the CUDA backend on this box measures 16.77 (ternary) and 19.03
+(1-bit). **Vulkan now ties CUDA on ternary and beats it on 1-bit.**
+
 WHERE THIS LEAVES THE NUMBERS
 ------------------------------
   Vulkan ceiling, wide loads          ~245 GB/s

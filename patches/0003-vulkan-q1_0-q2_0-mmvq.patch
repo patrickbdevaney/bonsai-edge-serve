@@ -30,25 +30,36 @@ index fd22aba11..b2b167dce 100644
              case GGML_TYPE_Q4_1:
              case GGML_TYPE_Q5_0:
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
-index 6fe3e2dc0..4cd4be32d 100644
+index 6fe3e2dc0..197767ab0 100644
 --- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
 +++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
-@@ -12,7 +12,9 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
- 
- #if defined(DATA_A_QUANT_LEGACY) || defined(DATA_A_MXFP4)
+@@ -14,7 +14,20 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
  #define K_PER_ITER 8
--#elif defined(DATA_A_QUANT_K)
-+#elif defined(DATA_A_QUANT_K) || defined(DATA_A_Q2_0) || defined(DATA_A_Q1_0)
-+// Q2_0 is 128 quants/block, outside the QUANT_K family, but it likewise
-+// consumes 16 quants (one 32-bit word) per mmvq_dot_product call.
+ #elif defined(DATA_A_QUANT_K)
  #define K_PER_ITER 16
- #elif defined(DATA_A_IQ1_S) || defined(DATA_A_IQ1_M)
+-#elif defined(DATA_A_IQ1_S) || defined(DATA_A_IQ1_M)
++#elif defined(DATA_A_IQ1_S) || defined(DATA_A_IQ1_M) || defined(DATA_A_Q2_0) || defined(DATA_A_Q1_0)
++// Q1_0/Q2_0 take the 32-quant class so each call issues a WIDER load: 32
++// quants is 8 bytes for Q2_0 (two consecutive uint32) and 4 bytes for Q1_0,
++// against 4 and 2 bytes in the 16-quant class.
++//
++// Measured on Thor (kernels/vulkan/bandwidth_vk.cpp), streaming read:
++//   one 32-bit word per lane, lane-strided   180.6 GB/s
++//   two consecutive words per lane           227.9 GB/s
++//   four consecutive / uvec4                 241-249 GB/s
++// The driver merges consecutive per-lane loads into wide transactions; it
++// does not do that for the lane-strided pattern. Four words would be better
++// still but spans two q8_1 blocks, and this framework carries one b-scale
++// per call, so 32 quants is the most that fits without changing the
++// contract for every other type.
  #define K_PER_ITER 32
+ #else
+ #error unimplemented
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
-index 73cf9c799..bee54fa05 100644
+index 73cf9c799..045c57d1c 100644
 --- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
 +++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
-@@ -29,6 +29,94 @@ FLOAT_TYPEV2 get_dm(uint ib) {
+@@ -29,6 +29,100 @@ FLOAT_TYPEV2 get_dm(uint ib) {
  }
  #endif
  
@@ -60,39 +71,35 @@ index 73cf9c799..bee54fa05 100644
 +}
 +
 +// Bit order is LSB-first and consecutive: weight j lives at byte j/8, bit
-+// j%8 (see dequantize_row_q1_0 in ggml-quants.c). So within a 16-bit word
-+// covering weights 16i..16i+15, weight j is simply bit j -- no stride trap
-+// of the kind Q2_0 has, but the nibble still has to be SPREAD across four
-+// bytes to line up with cache_b_qs[p] = activations 4p..4p+3.
++// j%8 (see dequantize_row_q1_0 in ggml-quants.c). Spread 4 bits to 4 bytes
++// with one multiply: bit i must land at bit 8i, so scaling by
++// 1 + 2^7 + 2^14 + 2^21 = 0x00204081 places each and the mask drops the
++// cross terms. Verified exhaustively against the shift/or form over all
++// 65536 x 4 inputs -- 0 mismatches.
 +int32_t q1_0_codes(uint h, uint p) {
-+    // Spread 4 bits to 4 bytes with one multiply. Bit i must land at bit
-+    // 8i, i.e. be scaled by 2^(7i), so multiplying by
-+    // 1 + 2^7 + 2^14 + 2^21 = 0x00204081 puts each bit where it belongs and
-+    // the mask drops the cross terms. Verified EXHAUSTIVELY against the
-+    // shift/or form over all 65536 h x 4 p -- 0 mismatches.
-+    //
-+    // The same trick does NOT work for Q2_0: its fields are 2 bits wide, so
-+    // partial sums carry between them (96 of 256 byte values disagree).
-+    // Measured worth: extraction is 10.05 ms/token of Q1_0 decode.
 +    const uint n = (h >> (4u * p)) & 0xFu;
 +    return int32_t((n * 0x00204081u) & 0x01010101u);
 +}
 +
 +FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-+    // 8 words of 16 quants per block; one 16-bit load, no pack32 needed.
-+    const uint h = uint(data_a_packed16[ib_a / 4].qs[(ib_a % 4) * 2 + iqs]);
++    // 32 quants = one 32-bit word, assembled from two 16-bit loads. A Q1_0
++    // block is 2 + 16 = 18 bytes and only 2-byte aligned, so a uint32_t
++    // member would pad the std430 stride and misread every block.
++    const uint wi = (ib_a % 4) * 2;
++    const uint w = pack32(u16vec2(data_a_packed16[ib_a / 4].qs[wi    ],
++                                  data_a_packed16[ib_a / 4].qs[wi + 1]));
 +
 +    int32_t q_sum = 0;
-+    q_sum += dotPacked4x8EXT(q1_0_codes(h, 0), cache_b_qs[0]);
-+    q_sum += dotPacked4x8EXT(q1_0_codes(h, 1), cache_b_qs[1]);
-+    q_sum += dotPacked4x8EXT(q1_0_codes(h, 2), cache_b_qs[2]);
-+    q_sum += dotPacked4x8EXT(q1_0_codes(h, 3), cache_b_qs[3]);
++    for (uint k = 0; k < 8; ++k) {
++        q_sum += dotPacked4x8EXT(q1_0_codes(w, k), cache_b_qs[k]);
++    }
 +
 +    // Bits {0,1} represent values {-1,+1}, i.e. v = 2c - 1, so
-+    // sum(v*b) = 2*sum(c*b) - sum(b). The factor of 2 is what distinguishes
-+    // this from Q2_0; the halved dsb.y is the same 32/K_PER_ITER = 2 split.
++    // sum(v*b) = 2*sum(c*b) - sum(b). One call now covers the whole 32-quant
++    // q8_1 block, so the correction takes all of cache_b_ds.y rather than a
++    // fraction of it.
 +    return FLOAT_TYPE(float(get_dm(ib_a))
-+                      * (2.0 * float(q_sum) * cache_b_ds.x - 0.5 * cache_b_ds.y));
++                      * (2.0 * float(q_sum) * cache_b_ds.x - cache_b_ds.y));
 +}
 +#endif
 +
@@ -108,7 +115,10 @@ index 73cf9c799..bee54fa05 100644
 +// the same field from each byte, i.e. weights strided by 4, silently paired
 +// with the wrong activations. Extract per byte instead. Validated against a
 +// CPU reference in bonsai-edge-serve (kernels/vulkan/gemv_q2.comp,
-+// -DGGUF_ORDER): max rel err 4.783e-06, and 2-8% FASTER than a repack.
++// -DGGUF_ORDER): max rel err 4.783e-06.
++//
++// The multiply trick used for Q1_0 does NOT port: 2-bit fields carry into
++// each other and 96 of 256 byte values disagree. Checked exhaustively.
 +int32_t q2_0_codes(uint w, uint p) {
 +    const uint c4 = (w >> (8u * p)) & 0xFFu;
 +    return int32_t( (c4        & 3u)
@@ -118,25 +128,32 @@ index 73cf9c799..bee54fa05 100644
 +}
 +
 +FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
-+    // 8 words of 16 quants per block; sub-block (ib_a%4) covers words
-+    // 2*(ib_a%4) and +1, and iqs picks the half. 2-byte loads, see the
-+    // alignment note on block_q2_0_packed16 in types.glsl.
-+    const uint wi = ((ib_a % 4) * 2 + iqs) * 2;
-+    const uint w = pack32(u16vec2(data_a_packed16[ib_a / 4].qs[wi    ],
-+                                  data_a_packed16[ib_a / 4].qs[wi + 1]));
++    // 32 quants = TWO CONSECUTIVE 32-bit words. Issued back to back so the
++    // driver can merge them: 227.9 GB/s against 180.6 for one word per lane
++    // (kernels/vulkan/bandwidth_vk.cpp). A Q2_0 block is 34 bytes and only
++    // 2-byte aligned, hence the packed16 view -- a uint32_t member pads the
++    // std430 stride to 36 and misreads every block after the first.
++    const uint wi = (ib_a % 4) * 4;
++    const uint16_t h0 = data_a_packed16[ib_a / 4].qs[wi    ];
++    const uint16_t h1 = data_a_packed16[ib_a / 4].qs[wi + 1];
++    const uint16_t h2 = data_a_packed16[ib_a / 4].qs[wi + 2];
++    const uint16_t h3 = data_a_packed16[ib_a / 4].qs[wi + 3];
++    const uint w0 = pack32(u16vec2(h0, h1));
++    const uint w1 = pack32(u16vec2(h2, h3));
 +
 +    int32_t q_sum = 0;
-+    q_sum += dotPacked4x8EXT(q2_0_codes(w, 0), cache_b_qs[0]);
-+    q_sum += dotPacked4x8EXT(q2_0_codes(w, 1), cache_b_qs[1]);
-+    q_sum += dotPacked4x8EXT(q2_0_codes(w, 2), cache_b_qs[2]);
-+    q_sum += dotPacked4x8EXT(q2_0_codes(w, 3), cache_b_qs[3]);
++    for (uint p = 0; p < 4; ++p) {
++        q_sum += dotPacked4x8EXT(q2_0_codes(w0, p), cache_b_qs[p]);
++    }
++    for (uint p = 0; p < 4; ++p) {
++        q_sum += dotPacked4x8EXT(q2_0_codes(w1, p), cache_b_qs[4 + p]);
++    }
 +
 +    // Codes {0,1,2,3} represent values {-1,0,1,2}, so sum(v*b) =
-+    // sum(c*b) - sum(b). cache_b_ds.y is d_b*sum(q) over all 32 quants of
-+    // the q8_1 block, and 32/K_PER_ITER = 2 calls cover it, so each call
-+    // takes half. Same identity as the CUDA and NEON backends.
++    // sum(c*b) - sum(b). One call now covers the whole 32-quant q8_1 block,
++    // so the correction takes all of cache_b_ds.y.
 +    return FLOAT_TYPE(float(get_dm(ib_a))
-+                      * (float(q_sum) * cache_b_ds.x - 0.5 * cache_b_ds.y));
++                      * (float(q_sum) * cache_b_ds.x - cache_b_ds.y));
 +}
 +#endif
 +
