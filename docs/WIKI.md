@@ -33,8 +33,8 @@ hardware backs it. Everything else lives under Open Questions.
 | W14 | **Vulkan q2_0 MMVQ shipped end to end** | tg128 **11.75 -> 15.76 tok/s (+34.1%)**, same binary, `GGML_VK_DISABLE_MMVQ` A/B; 28/28 op tests vs CPU | `a47598b` |
 | W15 | **Vulkan q1_0 MMVQ + multiply bit-spread** | tg128 **15.39 -> 19.03 tok/s (+23.7%)**; matches CUDA's 19.03 on this model | `ae75cd9` |
 | W16 | An ALU probe turned a disappointing result into a 4x-bigger win | Q1_0 +6.0% -> +23.7%, by measuring extraction cost instead of arguing about it | `ae75cd9` |
-| W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `pending` |
-| W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `pending` |
+| W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `92d3886` |
+| W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `92d3886` |
 
 ---
 
