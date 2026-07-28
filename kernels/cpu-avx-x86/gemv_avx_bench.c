@@ -345,6 +345,10 @@ int main(int argc, char **argv) {
     const int K = (argc > 1) ? atoi(argv[1]) : 4096;
     const int N = (argc > 2) ? atoi(argv[2]) : 8192;
     const int iters = (argc > 3) ? atoi(argv[3]) : 5;
+    // "mt": validation + threaded sweep only. For pinning/affinity
+    // experiments, where re-running the scalar baselines would dominate
+    // the wall clock without adding information.
+    const int mt_only = (argc > 4) && !strcmp(argv[4], "mt");
     const int nblk = K / BONSAI_QK;
     if (K % 256 != 0) {
         fprintf(stderr, "K must be a multiple of 256 (q1 pairs blocks)\n");
@@ -359,18 +363,22 @@ int main(int argc, char **argv) {
     printf("dot step: VPMADDUBSW only (no VNNI at compile time)\n\n");
 #endif
 
-    uint8_t *q2  = aligned_alloc(64, (size_t)N*K/4);
-    uint8_t *q2r = aligned_alloc(64, (size_t)N*K/4);
-    uint8_t *q1  = aligned_alloc(64, (size_t)N*K/8);
-    uint8_t *q1r = aligned_alloc(64, (size_t)N*K/8);
-    float   *S   = aligned_alloc(64, (size_t)N*nblk*sizeof(float));
-    int8_t  *A   = aligned_alloc(64, K);
-    int8_t  *P2  = aligned_alloc(64, K);
-    int8_t  *P1  = aligned_alloc(64, K);
-    int32_t *ASUM= aligned_alloc(64, nblk*sizeof(int32_t));
-    float   *ref2= aligned_alloc(64, (size_t)N*sizeof(float));
-    float   *ref1= aligned_alloc(64, (size_t)N*sizeof(float));
-    float   *o   = aligned_alloc(64, (size_t)N*sizeof(float));
+    // C11 aligned_alloc requires size to be a multiple of the
+    // alignment; round up so small shapes (e.g. K=1024 -> 32-byte ASUM)
+    // are not UB.
+    #define XALLOC(sz) aligned_alloc(64, ((size_t)(sz) + 63) & ~(size_t)63)
+    uint8_t *q2  = XALLOC((size_t)N*K/4);
+    uint8_t *q2r = XALLOC((size_t)N*K/4);
+    uint8_t *q1  = XALLOC((size_t)N*K/8);
+    uint8_t *q1r = XALLOC((size_t)N*K/8);
+    float   *S   = XALLOC((size_t)N*nblk*sizeof(float));
+    int8_t  *A   = XALLOC(K);
+    int8_t  *P2  = XALLOC(K);
+    int8_t  *P1  = XALLOC(K);
+    int32_t *ASUM= XALLOC(nblk*sizeof(int32_t));
+    float   *ref2= XALLOC((size_t)N*sizeof(float));
+    float   *ref1= XALLOC((size_t)N*sizeof(float));
+    float   *o   = XALLOC((size_t)N*sizeof(float));
 
     srand(99);
     for (size_t i = 0; i < (size_t)N*K/4; ++i) q2[i] = rand() & 0xFF;
@@ -420,8 +428,10 @@ int main(int argc, char **argv) {
 #endif
 
 #ifdef USE_BLAS
-    float *Wf = aligned_alloc(64, (size_t)N*K*sizeof(float));
-    float *Af = aligned_alloc(64, K*sizeof(float));
+    float *Wf = NULL;
+    float *Af = XALLOC(K*sizeof(float));
+    if (!mt_only) {
+    Wf = XALLOC((size_t)N*K*sizeof(float));
     if (!Wf) { fprintf(stderr, "fp32 matrix alloc failed\n"); return 1; }
     dequant_q2_fp32(q2, S, Wf, N, K);
     for (int j = 0; j < K; ++j) Af[j] = da * (float)A[j];
@@ -438,18 +448,27 @@ int main(int argc, char **argv) {
                worst < 1e-2 ? "OK" : "*** MISMATCH ***");
         if (!(worst < 1e-2)) ok = 0;
     }
+    } // !mt_only
 #endif
     if (!ok) { printf("\nVALIDATION FAILED -- timings suppressed\n"); return 1; }
 
-    printf("\n=== throughput, single thread (%d iters) ===\n", iters);
+    // The loop counter is deliberately NOT named `i`: `call` is pasted
+    // into this loop body, and the MT sweep's call sites index sweep[i]
+    // with the *enclosing* i. A counter named i here shadows it, so
+    // every timed call would read sweep[0..iters-1] -- a mixture of
+    // thread counts reported under one label, and out-of-bounds reads
+    // (crashing in libgomp) once iters exceeds the sweep length. This
+    // happened; the flat MT scaling it produced looked real for a day.
     #define BENCH(name, bytes, call) do { \
         call; double t0 = now_s(); \
-        for (int i = 0; i < iters; ++i) { call; } \
+        for (int bench_it_ = 0; bench_it_ < iters; ++bench_it_) { call; } \
         double dt = (now_s()-t0)/iters; \
         printf("  %-24s %8.2f ms  %7.2f GB/s\n", name, dt*1e3, (bytes)/dt/1e9); \
     } while (0)
 
     const double b2 = (double)N*K/4, b1 = (double)N*K/8;
+    if (!mt_only) {
+    printf("\n=== throughput, single thread (%d iters) ===\n", iters);
     BENCH("q2 v0 scalar",    b2, gemv_q2_scalar(q2,S,A,da,o,N,K));
     BENCH("q2 avx2 1 row",   b2, gemv_q2_avx2_r1(q2r,S,P2,ASUM,da,o,N,K));
     BENCH("q2 avx2 2 rows",  b2, gemv_q2_avx2_r2(q2r,S,P2,ASUM,da,o,N,K));
@@ -475,10 +494,10 @@ int main(int argc, char **argv) {
     // fp32 control: same matrix, 16x the bytes. GB/s below counts the
     // fp32 bytes it actually streams -- compare the ms column, which is
     // what a token costs.
-    const double bf = (double)N*K*4;
-    BENCH("fp32 sgemv 1T (BLAS)", bf,
+    BENCH("fp32 sgemv 1T (BLAS)", (double)N*K*4,
           cblas_sgemv(CblasRowMajor, CblasNoTrans, N, K, 1.f, Wf, K, Af, 1, 0.f, o, 1));
 #endif
+    } // !mt_only
 
     printf("\n=== threaded (best kernel, R=4) ===\n");
     const int sweep[] = {1, 2, 4, 6, 8, 12, 16, 20, 24, 32};
@@ -493,11 +512,12 @@ int main(int argc, char **argv) {
         BENCH(nm, b1, gemv_q1_mt(q1r,S,P1,ASUM,da,o,N,K,sweep[i]));
     }
 #ifdef USE_BLAS
+    if (!mt_only)
     for (size_t i = 0; i < sizeof(sweep)/sizeof(*sweep); ++i) {
         char nm[64];
         snprintf(nm, sizeof nm, "fp32 sgemv t=%d", sweep[i]);
         openblas_set_num_threads(sweep[i]);
-        BENCH(nm, bf,
+        BENCH(nm, (double)N*K*4,
               cblas_sgemv(CblasRowMajor, CblasNoTrans, N, K, 1.f, Wf, K, Af, 1, 0.f, o, 1));
     }
     openblas_set_num_threads(1);

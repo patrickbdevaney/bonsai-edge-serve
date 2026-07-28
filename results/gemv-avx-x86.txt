@@ -1,5 +1,5 @@
 == host: Intel(R) Core(TM) i9-14900HX ==
-== gcc 13, OpenBLAS 0.3.29 (conda, pthreads) ==
+== gcc 13, OpenBLAS 0.3.29 (conda, pthreads), governor powersave, idle machine (load < 0.5 at start) ==
 
 ===== shape 1: N=32768 K=4096 (NEON-comparable; Q2_0 32 MiB ~ L3-resident) =====
 shape N=32768 K=4096   Q2_0 32.0 MiB   Q1_0 16.0 MiB
@@ -17,55 +17,55 @@ dot step: VPDPBUSD (AVX-VNNI) + VPMADDUBSW ladder
   fp32 sgemv (BLAS)        max rel err 1.450e-04  OK
 
 === throughput, single thread (10 iters) ===
-  q2 v0 scalar               293.08 ms     0.11 GB/s
-  q2 avx2 1 row                7.30 ms     4.60 GB/s
-  q2 avx2 2 rows               7.13 ms     4.71 GB/s
-  q2 avx2 4 rows               7.42 ms     4.52 GB/s
-  q2 avx2 8 rows               7.31 ms     4.59 GB/s
-  q2 vnni 1 row                5.85 ms     5.73 GB/s
-  q2 vnni 2 rows               5.76 ms     5.82 GB/s
-  q2 vnni 4 rows               5.76 ms     5.83 GB/s
-  q2 vnni 8 rows               5.64 ms     5.95 GB/s
-  q1 v0 scalar              1342.03 ms     0.01 GB/s
-  q1 avx2 1 row                6.45 ms     2.60 GB/s
-  q1 avx2 4 rows               6.31 ms     2.66 GB/s
-  q1 avx2 8 rows               7.41 ms     2.26 GB/s
-  q1 vnni 1 row                5.77 ms     2.91 GB/s
-  q1 vnni 4 rows               5.66 ms     2.96 GB/s
-  q1 vnni 8 rows               5.18 ms     3.24 GB/s
-  fp32 sgemv 1T (BLAS)        34.21 ms    15.69 GB/s
+  q2 v0 scalar               183.97 ms     0.18 GB/s
+  q2 avx2 1 row                6.39 ms     5.25 GB/s
+  q2 avx2 2 rows               5.98 ms     5.61 GB/s
+  q2 avx2 4 rows               6.21 ms     5.40 GB/s
+  q2 avx2 8 rows               6.12 ms     5.49 GB/s
+  q2 vnni 1 row                4.85 ms     6.92 GB/s
+  q2 vnni 2 rows               5.08 ms     6.61 GB/s
+  q2 vnni 4 rows               5.59 ms     6.00 GB/s
+  q2 vnni 8 rows               5.37 ms     6.25 GB/s
+  q1 v0 scalar              1024.13 ms     0.02 GB/s
+  q1 avx2 1 row                4.31 ms     3.90 GB/s
+  q1 avx2 4 rows               4.21 ms     3.99 GB/s
+  q1 avx2 8 rows               4.42 ms     3.80 GB/s
+  q1 vnni 1 row                3.91 ms     4.29 GB/s
+  q1 vnni 4 rows               4.44 ms     3.78 GB/s
+  q1 vnni 8 rows               4.07 ms     4.12 GB/s
+  fp32 sgemv 1T (BLAS)        23.75 ms    22.60 GB/s
 
 === threaded (best kernel, R=4) ===
-  q2 mt t=1                    3.16 ms    10.63 GB/s
-  q2 mt t=2                    3.14 ms    10.70 GB/s
-  q2 mt t=4                    2.92 ms    11.51 GB/s
-  q2 mt t=6                    3.57 ms     9.39 GB/s
-  q2 mt t=8                    3.14 ms    10.67 GB/s
-  q2 mt t=12                   4.13 ms     8.12 GB/s
-  q2 mt t=16                   3.75 ms     8.95 GB/s
-  q2 mt t=20                   3.54 ms     9.47 GB/s
-  q2 mt t=24                   2.86 ms    11.74 GB/s
-  q2 mt t=32                   3.33 ms    10.07 GB/s
-  q1 mt t=1                    2.69 ms     6.24 GB/s
-  q1 mt t=2                    2.71 ms     6.20 GB/s
-  q1 mt t=4                    3.15 ms     5.32 GB/s
-  q1 mt t=6                    2.95 ms     5.68 GB/s
-  q1 mt t=8                    2.87 ms     5.84 GB/s
-  q1 mt t=12                   3.45 ms     4.86 GB/s
-  q1 mt t=16                   3.02 ms     5.56 GB/s
-  q1 mt t=20                   3.14 ms     5.35 GB/s
-  q1 mt t=24                   3.64 ms     4.60 GB/s
-  q1 mt t=32                   3.86 ms     4.35 GB/s
-  fp32 sgemv t=1              39.32 ms    13.65 GB/s
-  fp32 sgemv t=2              20.68 ms    25.96 GB/s
-  fp32 sgemv t=4              27.62 ms    19.44 GB/s
-  fp32 sgemv t=6              24.78 ms    21.66 GB/s
-  fp32 sgemv t=8              24.91 ms    21.55 GB/s
-  fp32 sgemv t=12             21.57 ms    24.89 GB/s
-  fp32 sgemv t=16             20.17 ms    26.62 GB/s
-  fp32 sgemv t=20             18.57 ms    28.92 GB/s
-  fp32 sgemv t=24             18.99 ms    28.27 GB/s
-  fp32 sgemv t=32             21.43 ms    25.05 GB/s
+  q2 mt t=1                    3.72 ms     9.02 GB/s
+  q2 mt t=2                    3.05 ms    10.99 GB/s
+  q2 mt t=4                    2.53 ms    13.28 GB/s
+  q2 mt t=6                    2.11 ms    15.89 GB/s
+  q2 mt t=8                    1.41 ms    23.75 GB/s
+  q2 mt t=12                   1.28 ms    26.25 GB/s
+  q2 mt t=16                   1.06 ms    31.73 GB/s
+  q2 mt t=20                   0.98 ms    34.16 GB/s
+  q2 mt t=24                   0.85 ms    39.47 GB/s
+  q2 mt t=32                   0.76 ms    44.17 GB/s
+  q1 mt t=1                    6.28 ms     2.67 GB/s
+  q1 mt t=2                    2.72 ms     6.17 GB/s
+  q1 mt t=4                    2.23 ms     7.52 GB/s
+  q1 mt t=6                    1.46 ms    11.53 GB/s
+  q1 mt t=8                    1.56 ms    10.77 GB/s
+  q1 mt t=12                   1.02 ms    16.41 GB/s
+  q1 mt t=16                   0.87 ms    19.27 GB/s
+  q1 mt t=20                   0.84 ms    19.97 GB/s
+  q1 mt t=24                   0.73 ms    22.88 GB/s
+  q1 mt t=32                   0.74 ms    22.57 GB/s
+  fp32 sgemv t=1              24.67 ms    21.76 GB/s
+  fp32 sgemv t=2              16.40 ms    32.74 GB/s
+  fp32 sgemv t=4              14.93 ms    35.96 GB/s
+  fp32 sgemv t=6              15.94 ms    33.68 GB/s
+  fp32 sgemv t=8              17.15 ms    31.30 GB/s
+  fp32 sgemv t=12             20.18 ms    26.61 GB/s
+  fp32 sgemv t=16             18.57 ms    28.91 GB/s
+  fp32 sgemv t=20             17.78 ms    30.20 GB/s
+  fp32 sgemv t=24             17.64 ms    30.43 GB/s
+  fp32 sgemv t=32             20.13 ms    26.68 GB/s
 
 GB/s counts each variant's own streamed weight bytes; the
 fp32 rows stream 16x Q2_0's bytes, so compare ms per GEMV.
@@ -85,56 +85,134 @@ dot step: VPDPBUSD (AVX-VNNI) + VPMADDUBSW ladder
   q1 vnni 8 rows           max rel err 0.000e+00  OK
   fp32 sgemv (BLAS)        max rel err 3.678e-05  OK
 
-=== throughput, single thread (3 iters) ===
-  q2 v0 scalar              1574.86 ms     0.17 GB/s
-  q2 avx2 1 row               48.17 ms     5.57 GB/s
-  q2 avx2 2 rows              45.51 ms     5.90 GB/s
-  q2 avx2 4 rows              40.39 ms     6.65 GB/s
-  q2 avx2 8 rows              42.81 ms     6.27 GB/s
-  q2 vnni 1 row               33.88 ms     7.92 GB/s
-  q2 vnni 2 rows              34.01 ms     7.89 GB/s
-  q2 vnni 4 rows              40.07 ms     6.70 GB/s
-  q2 vnni 8 rows              38.74 ms     6.93 GB/s
-  q1 v0 scalar              8789.86 ms     0.02 GB/s
-  q1 avx2 1 row               46.37 ms     2.89 GB/s
-  q1 avx2 4 rows              40.98 ms     3.28 GB/s
-  q1 avx2 8 rows              43.36 ms     3.10 GB/s
-  q1 vnni 1 row               33.65 ms     3.99 GB/s
-  q1 vnni 4 rows              39.01 ms     3.44 GB/s
-  q1 vnni 8 rows              30.22 ms     4.44 GB/s
-  fp32 sgemv 1T (BLAS)       231.24 ms    18.57 GB/s
+=== throughput, single thread (5 iters) ===
+  q2 v0 scalar              1338.76 ms     0.20 GB/s
+  q2 avx2 1 row               39.05 ms     6.87 GB/s
+  q2 avx2 2 rows              44.60 ms     6.02 GB/s
+  q2 avx2 4 rows              41.13 ms     6.53 GB/s
+  q2 avx2 8 rows              40.24 ms     6.67 GB/s
+  q2 vnni 1 row               31.06 ms     8.64 GB/s
+  q2 vnni 2 rows              33.16 ms     8.10 GB/s
+  q2 vnni 4 rows              34.90 ms     7.69 GB/s
+  q2 vnni 8 rows              31.77 ms     8.45 GB/s
+  q1 v0 scalar              8034.49 ms     0.02 GB/s
+  q1 avx2 1 row               43.53 ms     3.08 GB/s
+  q1 avx2 4 rows              44.90 ms     2.99 GB/s
+  q1 avx2 8 rows              42.84 ms     3.13 GB/s
+  q1 vnni 1 row               36.52 ms     3.68 GB/s
+  q1 vnni 4 rows              41.67 ms     3.22 GB/s
+  q1 vnni 8 rows              32.58 ms     4.12 GB/s
+  fp32 sgemv 1T (BLAS)       237.65 ms    18.07 GB/s
 
 === threaded (best kernel, R=4) ===
-  q2 mt t=1                   32.16 ms     8.35 GB/s
-  q2 mt t=2                   30.65 ms     8.76 GB/s
-  q2 mt t=4                   30.95 ms     8.67 GB/s
-  q2 mt t=6                   29.05 ms     9.24 GB/s
-  q2 mt t=8                   31.50 ms     8.52 GB/s
-  q2 mt t=12                  29.84 ms     9.00 GB/s
-  q2 mt t=16                  30.50 ms     8.80 GB/s
-  q2 mt t=20                  30.25 ms     8.87 GB/s
-  q2 mt t=24                  33.28 ms     8.07 GB/s
-  q2 mt t=32                  28.93 ms     9.28 GB/s
-  q1 mt t=1                   27.16 ms     4.94 GB/s
-  q1 mt t=2                   32.40 ms     4.14 GB/s
-  q1 mt t=4                   28.69 ms     4.68 GB/s
-  q1 mt t=6                   26.22 ms     5.12 GB/s
-  q1 mt t=8                   32.30 ms     4.16 GB/s
-  q1 mt t=12                  33.91 ms     3.96 GB/s
-  q1 mt t=16                  36.25 ms     3.70 GB/s
-  q1 mt t=20                  30.41 ms     4.41 GB/s
-  q1 mt t=24                  27.99 ms     4.79 GB/s
-  q1 mt t=32                  32.64 ms     4.11 GB/s
-  fp32 sgemv t=1             232.53 ms    18.47 GB/s
-  fp32 sgemv t=2             150.23 ms    28.59 GB/s
-  fp32 sgemv t=4             146.38 ms    29.34 GB/s
-  fp32 sgemv t=6             145.84 ms    29.45 GB/s
-  fp32 sgemv t=8             151.59 ms    28.33 GB/s
-  fp32 sgemv t=12            160.61 ms    26.74 GB/s
-  fp32 sgemv t=16            152.66 ms    28.13 GB/s
-  fp32 sgemv t=20            144.96 ms    29.63 GB/s
-  fp32 sgemv t=24            141.60 ms    30.33 GB/s
-  fp32 sgemv t=32            160.48 ms    26.76 GB/s
+  q2 mt t=1                   38.55 ms     6.96 GB/s
+  q2 mt t=2                   27.51 ms     9.76 GB/s
+  q2 mt t=4                   15.12 ms    17.75 GB/s
+  q2 mt t=6                   13.17 ms    20.38 GB/s
+  q2 mt t=8                   12.33 ms    21.77 GB/s
+  q2 mt t=12                  11.99 ms    22.39 GB/s
+  q2 mt t=16                  12.24 ms    21.94 GB/s
+  q2 mt t=20                  11.70 ms    22.95 GB/s
+  q2 mt t=24                  10.85 ms    24.74 GB/s
+  q2 mt t=32                  10.89 ms    24.65 GB/s
+  q1 mt t=1                   41.11 ms     3.26 GB/s
+  q1 mt t=2                   26.38 ms     5.09 GB/s
+  q1 mt t=4                   15.52 ms     8.65 GB/s
+  q1 mt t=6                   11.77 ms    11.41 GB/s
+  q1 mt t=8                   11.33 ms    11.85 GB/s
+  q1 mt t=12                   9.09 ms    14.76 GB/s
+  q1 mt t=16                   7.85 ms    17.09 GB/s
+  q1 mt t=20                   7.17 ms    18.71 GB/s
+  q1 mt t=24                   7.14 ms    18.79 GB/s
+  q1 mt t=32                   7.52 ms    17.85 GB/s
+  fp32 sgemv t=1             253.28 ms    16.96 GB/s
+  fp32 sgemv t=2             150.83 ms    28.48 GB/s
+  fp32 sgemv t=4             138.63 ms    30.98 GB/s
+  fp32 sgemv t=6             148.63 ms    28.90 GB/s
+  fp32 sgemv t=8             138.84 ms    30.93 GB/s
+  fp32 sgemv t=12            163.66 ms    26.24 GB/s
+  fp32 sgemv t=16            151.55 ms    28.34 GB/s
+  fp32 sgemv t=20            146.46 ms    29.32 GB/s
+  fp32 sgemv t=24            143.36 ms    29.96 GB/s
+  fp32 sgemv t=32            152.02 ms    28.25 GB/s
+
+GB/s counts each variant's own streamed weight bytes; the
+fp32 rows stream 16x Q2_0's bytes, so compare ms per GEMV.
+
+===== shape 2 threaded, pinned P-cores (taskset 0-15, OMP_PLACES=cores OMP_PROC_BIND=spread) =====
+shape N=131072 K=8192   Q2_0 256.0 MiB   Q1_0 128.0 MiB
+dot step: VPDPBUSD (AVX-VNNI) + VPMADDUBSW ladder
+
+=== validation (first 256 rows vs scalar reference) ===
+  q2 avx2 1 row            max rel err 0.000e+00  OK
+  q2 avx2 8 rows           max rel err 0.000e+00  OK
+  q1 avx2 1 row            max rel err 0.000e+00  OK
+  q1 avx2 8 rows           max rel err 0.000e+00  OK
+  q2 vnni 1 row            max rel err 0.000e+00  OK
+  q2 vnni 8 rows           max rel err 0.000e+00  OK
+  q1 vnni 1 row            max rel err 0.000e+00  OK
+  q1 vnni 8 rows           max rel err 0.000e+00  OK
+
+=== threaded (best kernel, R=4) ===
+  q2 mt t=1                   34.71 ms     7.73 GB/s
+  q2 mt t=2                   24.23 ms    11.08 GB/s
+  q2 mt t=4                   14.58 ms    18.40 GB/s
+  q2 mt t=6                   10.54 ms    25.47 GB/s
+  q2 mt t=8                    9.28 ms    28.94 GB/s
+  q2 mt t=12                   9.35 ms    28.71 GB/s
+  q2 mt t=16                   9.11 ms    29.46 GB/s
+  q2 mt t=20                   9.42 ms    28.48 GB/s
+  q2 mt t=24                   9.02 ms    29.76 GB/s
+  q2 mt t=32                   8.87 ms    30.27 GB/s
+  q1 mt t=1                   33.97 ms     3.95 GB/s
+  q1 mt t=2                   23.77 ms     5.65 GB/s
+  q1 mt t=4                   15.29 ms     8.78 GB/s
+  q1 mt t=6                   10.86 ms    12.36 GB/s
+  q1 mt t=8                    8.78 ms    15.29 GB/s
+  q1 mt t=12                   7.15 ms    18.76 GB/s
+  q1 mt t=16                   5.49 ms    24.45 GB/s
+  q1 mt t=20                   6.68 ms    20.10 GB/s
+  q1 mt t=24                   6.15 ms    21.82 GB/s
+  q1 mt t=32                   5.41 ms    24.82 GB/s
+
+GB/s counts each variant's own streamed weight bytes; the
+fp32 rows stream 16x Q2_0's bytes, so compare ms per GEMV.
+
+===== shape 2 threaded, pinned E-cores (taskset 16-31) =====
+shape N=131072 K=8192   Q2_0 256.0 MiB   Q1_0 128.0 MiB
+dot step: VPDPBUSD (AVX-VNNI) + VPMADDUBSW ladder
+
+=== validation (first 256 rows vs scalar reference) ===
+  q2 avx2 1 row            max rel err 0.000e+00  OK
+  q2 avx2 8 rows           max rel err 0.000e+00  OK
+  q1 avx2 1 row            max rel err 0.000e+00  OK
+  q1 avx2 8 rows           max rel err 0.000e+00  OK
+  q2 vnni 1 row            max rel err 0.000e+00  OK
+  q2 vnni 8 rows           max rel err 0.000e+00  OK
+  q1 vnni 1 row            max rel err 0.000e+00  OK
+  q1 vnni 8 rows           max rel err 0.000e+00  OK
+
+=== threaded (best kernel, R=4) ===
+  q2 mt t=1                   72.70 ms     3.69 GB/s
+  q2 mt t=2                   42.96 ms     6.25 GB/s
+  q2 mt t=4                   24.80 ms    10.82 GB/s
+  q2 mt t=6                   17.27 ms    15.55 GB/s
+  q2 mt t=8                   12.99 ms    20.66 GB/s
+  q2 mt t=12                  13.16 ms    20.39 GB/s
+  q2 mt t=16                  11.45 ms    23.44 GB/s
+  q2 mt t=20                  16.68 ms    16.09 GB/s
+  q2 mt t=24                  14.31 ms    18.76 GB/s
+  q2 mt t=32                  11.53 ms    23.28 GB/s
+  q1 mt t=1                   63.18 ms     2.12 GB/s
+  q1 mt t=2                   35.92 ms     3.74 GB/s
+  q1 mt t=4                   20.99 ms     6.39 GB/s
+  q1 mt t=6                   14.91 ms     9.00 GB/s
+  q1 mt t=8                   11.51 ms    11.66 GB/s
+  q1 mt t=12                  10.55 ms    12.73 GB/s
+  q1 mt t=16                   8.58 ms    15.65 GB/s
+  q1 mt t=20                  12.51 ms    10.73 GB/s
+  q1 mt t=24                  10.85 ms    12.36 GB/s
+  q1 mt t=32                   8.63 ms    15.55 GB/s
 
 GB/s counts each variant's own streamed weight bytes; the
 fp32 rows stream 16x Q2_0's bytes, so compare ms per GEMV.

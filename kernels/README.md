@@ -341,52 +341,80 @@ single thread, GB/s of weight bytes:
 
 | Kernel | Q2_0 | Q1_0 |
 | :-- | --: | --: |
-| scalar per-element extract | 0.17 | 0.02 |
-| AVX2 maddubs, best R | 6.65 | 3.28 |
-| **AVX-VNNI vpdpbusd, best R** | **7.92** | **4.44** |
+| scalar per-element extract | 0.20 | 0.02 |
+| AVX2 maddubs, best R | 6.87 | 3.13 |
+| **AVX-VNNI vpdpbusd, best R** | **8.64** | **4.12** |
 
-**~46x for ternary, ~440x for 1-bit** over per-element extract, and
-VNNI is worth +19-35% over the maddubs spelling of the same math. As on
+**~43x for ternary, ~200x for 1-bit** over per-element extract, and
+VNNI is worth +26-32% over the maddubs spelling of the same math. As on
 ARM, row blocking is nearly flat single-threaded -- unpack-ALU bound,
 not latency bound.
 
+Threaded (VNNI R=4), same streaming shape:
+
+| Config | Q2_0 | Q1_0 |
+| :-- | --: | --: |
+| 1 thread | 7.0 | 3.3 |
+| unpinned, best t | 24.7 | 18.8 |
+| **pinned P-cores, t=32** | **30.3** | **24.8** |
+| pinned E-cores, best t | 23.4 | 15.7 |
+| DRAM ceiling (fp32 sgemv, threaded) | 31.0 | -- |
+
+**Q2_0 saturates the measured DRAM ceiling.** Pinned to P-cores
+(`taskset -c 0-15`, `OMP_PLACES=cores OMP_PROC_BIND=spread`) the kernel
+sustains 30.3 GB/s of weight bytes against the 31.0 GB/s the same DRAM
+gives OpenBLAS sgemv -- there is nothing left on the table for the
+2-bit decode path on this machine. Unpinned costs ~18% (the scheduler
+mixes E-cores in), which is the number a real server should care about:
+pin the decode threads. Q1_0 tops out at 80% of the ceiling -- the
+same ALU-bound shape as ARM (same weights/instruction, half the bytes),
+and the same T-MAC LUT argument (`VPSHUFB` for `vqtbl1q`) with the same
+row-interleaving cost applies; prototype standalone before bending the
+shared format.
+
 The BLAS control row: the same matrix dequantized to fp32 through
-OpenBLAS `cblas_sgemv` takes **231 ms single-threaded against 34 ms**
-for the Q2_0 VNNI kernel at the same shape -- 6.8x -- and still 142 ms
-with 24 threads, 4.4x slower than our *single-threaded* kernel. BLAS's
-AVX kernels are fine; streaming 16x the bytes is what loses. That
-measurement, not an assertion, is why the low-bit format exists.
+OpenBLAS `cblas_sgemv` takes **238 ms single-threaded against 31 ms**
+for the Q2_0 VNNI kernel at the same shape -- 7.6x -- and its best
+threaded time, 139 ms, is still 15.6x slower than our best threaded
+kernel (8.9 ms). BLAS's AVX kernels are fine; streaming 16x the bytes
+is what loses. That measurement, not an assertion, is why the low-bit
+format exists.
 
-### The open item: multithread scaling is flat, and the DRAM says it shouldn't be
+### Post-mortem: the flat-scaling result that wasn't
 
-Threaded (VNNI R=4), the streaming shape moves 8.4 -> 9.3 GB/s from 1
-to 32 threads -- essentially nothing. But the fp32 sgemv rows measure
-the same DRAM sustaining **~30 GB/s** with threads (18.6 single), so
-the ceiling is real and the low-bit kernel is at ~a third of it. With
-scales (+1/8 of weight bytes) counted, one thread of our kernel moves
-~9 GB/s of true traffic while one thread of sgemv moves 18.6 -- so the
-per-thread gap is about 2x, and adding threads closes none of it. The
-suspects, in order: hybrid-scheduling placement (the same kernel runs
-2x faster inside a 1-thread OpenMP region than bare on shape 1, so
-thread placement demonstrably moves this kernel 2x), thermal steady
-state on a laptop chassis late in a long run, and the per-block
-`hsum256` reduction serializing the chains. Diagnosis needs isolated
-runs with pinning (`OMP_PLACES=cores`, P-cores only), and until that is
-done **9.3 GB/s threaded is what this repo claims** -- a ~3x gap to the
-measured DRAM ceiling is the honest open item, not a rounding error.
+The first published version of this section reported multithread
+scaling as flat at ~9 GB/s against the 30 GB/s ceiling and called it an
+open item. That number was wrong, and the way it was wrong is worth a
+paragraph, because the bug is a landmine anyone extending the bench
+could re-arm.
+
+The `BENCH` macro times `call` inside `for (int i = 0; i < iters; ++i)`.
+The MT sweep's call sites said `gemv_q2_mt(..., sweep[i])` -- and the
+macro's `i` **shadowed the sweep index**, so every timed row ran thread
+counts `sweep[0..iters-1]` instead of the one in its label: ten rows,
+each reporting the same mixture's average. Flat by construction. Worse,
+any `iters` beyond the sweep length walked off the array and handed
+libgomp garbage `num_threads` (a crash that only fired at `iters=40`,
+which is how it was caught). Three things made the diagnosis: the
+flatness contradicted the sgemv ceiling measured in the same run; a
+standalone driver with the same kernel scaled to the ceiling; and the
+crash pinned it. The macro's counter is now named `bench_it_`, and the
+comment on it says why. Lesson restated: a benchmark whose result
+contradicts a control measured in the same process is broken until
+proven otherwise -- the contradiction was visible in the first
+published table.
 
 ### What that means end to end
 
 Projecting weights-only bandwidth onto the real model (ternary 7.17 GB,
-1-bit 3.80 GB of weights per token), at the measured 9.3 / 5.1 GB/s:
-**~1.3 tok/s ternary, ~1.3 tok/s 1-bit** on this laptop part today, with
-the measured 30 GB/s DRAM ceiling putting the reachable roofline near
-**4.2 / 7.9 tok/s** if the scaling item above is closed. Q1_0 shows the
-same shape as ARM: same weights/instruction as Q2_0, half the bytes, so
-it gains nothing from being smaller -- the T-MAC-style LUT argument
-carries over to x86 (`VPSHUFB` in place of `vqtbl1q`), with the same
-row-interleaving cost, and the same recommendation: prototype standalone
-before bending the shared format.
+1-bit 3.80 GB of weights per token), at the measured pinned 30.3 / 24.8
+GB/s: **~4.2 tok/s ternary, ~6.5 tok/s 1-bit** as this machine's
+weights-bandwidth roofline for a decode step built on these kernels.
+Unlike the Thor CPU result, 1-bit wins end to end here even without the
+LUT kernel -- the DRAM is slow enough relative to 24 cores of unpack
+ALU that halving the bytes still pays. For comparison, fp32 at the
+same ceiling would be ~0.3 tok/s: the format is the difference between
+"unusable" and "usable-slow" on commodity x86.
 
 ## Building
 
