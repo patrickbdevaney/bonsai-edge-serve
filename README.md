@@ -498,6 +498,10 @@ OS is worth **1.73x (ternary) and 2.27x (1-bit)**:
 | **12** | **3.18** | **4.85** |
 | 14 (default) | 1.84 | 2.14 |
 
+> **Superseded: Q2_0 ARM repack kernels now exist** (`patches/0004`), taking
+> CPU-only ternary prefill from 4.04 to **15.76 tok/s (3.90x)** and decode
+> from 3.28 to **5.08 (1.55x)**. See `results/cpu-repack.txt`.
+>
 > **These CPU figures are the non-repack path and understate 1-bit.** They
 > were taken with `-ngl 0` on the CUDA build, where the CUDA pinned-host
 > buffer type outranks the repack buffer types in `make_cpu_buft_list`, so

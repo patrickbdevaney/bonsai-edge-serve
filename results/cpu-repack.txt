@@ -1,5 +1,12 @@
-CPU repack: it never engaged, every CPU number in this repo was the slow path
-==============================================================================
+CPU repack: it never engaged -- then Q2_0 ARM kernels shipped, 3.90x prefill
+=============================================================================
+
+OUTCOME (read this first): the Q2_0 ARM NEON repack kernels are now WRITTEN,
+VALIDATED and ENABLED. On a CPU-only run they take Q2_0 prefill from 4.04 to
+15.76 tok/s (3.90x) and decode from 3.28 to 5.08 (1.55x). Details in the
+"IMPLEMENTED" section at the end. The investigation that priced the work
+follows, because it is what stopped a wrong estimate becoming a wrong build.
+
 
 This started as "wire the NEON Q2_0 kernel into ggml, worth ~1.9x". Both
 halves of that turned out to be wrong, and the reason is worth more than the
@@ -95,23 +102,60 @@ single 64-bit table lookup per 8. That is the gap a repack kernel would
 close, and it is why the prefill prize for Q2_0 is plausibly larger than the
 +70% measured on Q1_0.
 
-STATUS: NOT IMPLEMENTED, AND WHY
-----------------------------------
-The Q2_0 ARM kernels are NOT written. Enabling the Q2_0 repack buffer type
-switches BOTH gemv and gemm, so shipping only the gemv would route prefill
-through `ggml_gemm_q2_0_4x8_q8_0_generic` (scalar) and regress prefill badly.
-Both are needed or neither, and the gemm additionally needs the interleaved
-`block_q8_0x4` activation layout. Landing half of it would leave exactly the
-half-integrated, unverified state this repo keeps catching in others' work.
+IMPLEMENTED: BOTH KERNELS, 3.90x PREFILL / 1.55x DECODE
+--------------------------------------------------------
+Both were needed together. Enabling the Q2_0 repack buffer type switches
+BOTH gemv and gemm, so shipping only the gemv would have routed prefill
+through the scalar `ggml_gemm_q2_0_4x8_q8_0_generic` and regressed it. The
+selector gate is therefore `neon && matmul_int8` -- matching the WEAKER of
+the two kernels (the i8mm gemm), not the stronger.
 
-The design for the gemv is settled and worth recording, because the obvious
-approach does not work. Our standalone kernel gets its speed from a
-whole-vector `AND`/`SHIFT` unpack, which requires the ACTIVATIONS to be
-pre-permuted 4-ways (lane i of the unpack corresponds to activation 4b+i).
-ggml's gemv hands you plain `block_q8_0` in natural order and does not let
-you permute it. The resolution is `vld4_s8`, which deinterleaves 32 int8
-activations by 4 in one instruction -- exactly the pattern the 2-bit lanes
-need -- so the EXISTING repack layout (`qs + k*32 + j*8`) can stay unchanged:
+  Q2_0, CPU-only, -ngl 0 -t 12, r=3
+
+                  pp64                tg16
+  repack OFF      4.04 +/- 0.01       3.28 +/- 0.03
+  ARM repack     15.76 +/- 0.14       5.08 +/- 0.01
+  gain           3.90x                1.55x
+
+Prefill gains far more than decode, which is what the earlier analysis
+predicted: decode is bandwidth-bound so the unpack cost hides behind memory,
+while prefill is compute-bound so it is exactly the unpack that was the
+bottleneck.
+
+For scale, Q2_0 CPU prefill was 4.04 tok/s -- slower than Q1_0's non-repack
+11.89 by 2.9x for only 1.89x the bytes, and barely faster than its own
+decode. It is now 15.76, ahead of Q1_0's non-repack path.
+
+VALIDATION
+----------
+`kernels/cpu-neon-arm/run_q2_0_repack_test.sh` links the real
+libggml-cpu.so and compares each kernel against the generic reference it
+replaces -- not a reimplementation of it, which could drift:
+
+  gemv q2_0 4x8   max rel err 8.447e-07   OK
+  gemm q2_0 4x8   max rel err 6.763e-05   OK
+  gemv all-code-{0,1,2,3}  (w = -1,0,+1,+2)   OK
+
+The degenerate all-one-code cases are there because a bias or offset error
+is exactly what uniformly random codes average away. And on the real model,
+greedy CPU output is **character-identical** with repack on and off.
+
+A note on the test's own guard: it first checks the kernel symbol is
+exported, because without it the test would link the generic under both
+names and pass while comparing a function to itself. That guard was
+initially written with `nm | grep -q`, which exits on first match, SIGPIPEs
+nm, and under `set -o pipefail` reports failure -- so a correct build was
+rejected by its own check. Counting instead of short-circuiting fixes it.
+
+THE DESIGN, AND WHY THE OBVIOUS APPROACH FAILS
+------------------------------------------------
+Our standalone kernel gets its speed from a whole-vector `AND`/`SHIFT`
+unpack, which requires the ACTIVATIONS to be pre-permuted 4-ways (lane i of
+the unpack corresponds to activation 4b+i). ggml's gemv hands you plain
+`block_q8_0` in natural order and does not let you permute it. The
+resolution is `vld4_s8`, which deinterleaves 32 int8 activations by 4 in one
+instruction -- exactly the pattern the 2-bit lanes need -- so the EXISTING
+repack layout (`qs + k*32 + j*8`) stays unchanged:
 
   int8x8x4_t y  = vld4_s8(a_blk->qs);   // y.val[i] = a[i], a[i+4], ...
   uint8x16_t v  = vld1q_u8(qs + k*32);  // rows 0,1
@@ -121,6 +165,17 @@ need -- so the EXISTING repack layout (`qs + k*32 + j*8`) can stay unchanged:
   acc = vdotq_s32(acc, v >> 6,         dup(y.val[3]));
   // vpaddq_s32 pairs -> one int32 per row; subtract the activation sum once
   // (codes are {0,1,2,3} biased by -1, so sum(w*a) = sum(c*a) - sum(a))
+
+The gemm cannot use that trick. `vmmlaq_s32` needs true SIGNED operands, so
+the "dot raw codes and subtract sum(a)" bias identity is unavailable there.
+It uses a 256-entry `table_q2_vals` mapping a byte to its four DEBIASED int8
+weights, mirroring the existing `table_q1_signs` -- an unpack becomes a load.
+
+One build trap worth recording: `arch-fallback.h` aliases
+`ggml_gemv_q2_0_4x8_q8_0_generic` to the plain name for every architecture
+that lacks an implementation. Adding the ARM kernels without removing the
+two aarch64 aliases produces a "multiple definition" link error, not a
+silent fallback -- the one gate in this whole exercise that failed loudly.
 
 EXPERIMENT HOOKS (patches/0004)
 --------------------------------
