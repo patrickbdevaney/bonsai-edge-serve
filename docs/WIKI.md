@@ -39,6 +39,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W20 | **Located the Vulkan 2x gap: load width, not bandwidth** | Vulkan reaches 245-250 GB/s (= CUDA) with wide loads, 180 lane-strided; our GEMV is at 130 | `ea555c2` |
 | W21 | **Decode speed is flat from 4K to 262144 context** | 15.33 -> 15.83 tok/s across a 64x context increase; full 256K fits in ~25 GiB | `03d1a8f` |
 | W22 | q8_0 KV cache is free on this model | 262144 ctx: KV 16384 -> 8704 MiB (-47%), throughput unchanged, greedy output identical | `03d1a8f` |
+| W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `pending` |
 
 ---
 
@@ -142,6 +143,58 @@ physically present in the tree, and it earned its keep immediately -- on
 the restore after the experiment above, `git checkout` plus a patch that
 failed to apply left the tree half-reverted, and the gate caught it before
 a single number was taken.
+
+### K10. Batching cannot help decode on a recurrent model here
+
+Decode is weight-bandwidth-bound -- a step reads all 6.66 GB regardless of
+how many sequences advance -- so batching S sequences should cost barely
+more than one. `bonsai-server` implements exactly that. Aggregate throughput
+is **flat**: 14.33 tok/s at concurrency 1, 14.70 at 2, 14.70 at 4, with
+per-stream falling exactly in proportion.
+
+The reason is in the fork's own source,
+`src/llama-memory-recurrent.cpp:440`:
+
+```c
+// if all tokens are output, split by sequence
+ubatch = balloc.split_seq(n_ubatch);
+```
+
+Decode is exactly the case where every token is an output, so a 4-token
+batch from 4 sequences becomes four single-token ubatches and four full
+weight reads. Structural, not a scheduler bug, and specific to
+recurrent/hybrid memory -- batching *within* one sequence works fine, which
+is why prefill runs at ~345 tok/s against decode's 15.8. The adjacent branch
+notes `split_equal()` is possible but "needs dedicated multi-seq rollback
+testing", so the limitation is deliberate upstream.
+
+**What multi-slot does buy is latency, and that is worth having.** Tokens
+interleave, so a short request no longer sits behind a long one: with one
+200-token request and three short ones in flight, the short ones completed
+at 1.27s instead of the ~15s they would have waited on a single slot.
+
+Two things to carry forward. **A feature's mechanism has to be checked, not
+assumed from a roofline** -- "decode is bandwidth-bound so batching is free"
+is correct about the hardware and wrong about this stack. And **state the
+benefit that is real**: this ships as a latency feature, not a throughput
+one, and the results file says so.
+
+### K11. A concurrency feature that slows the concurrency-1 case is a bug report
+
+The first batching implementation measured 8.16 tok/s single-stream, down
+from 14.4, and 4.53 aggregate at concurrency 4 with one HTTP 500.
+
+The tell was the single-stream number: nothing about decoding one sequence
+had changed, so a drop there could not be a property of batching. Cause:
+`busy` stays true until the HTTP thread releases a slot, several scheduler
+iterations after generation ends, so the loop kept appending tokens to
+finished slots -- burning decode steps and eventually pushing a slot's
+position past `n_ctx`, which surfaced as the 500. One `done` flag fixed both
+symptoms.
+
+Generalizable: when adding a feature, **measure the case the feature should
+not affect.** It is the cheapest control available and it isolates
+regressions that the headline measurement hides.
 
 ### K8. Vulkan needs wide loads where CUDA does not -- the rule did not port
 

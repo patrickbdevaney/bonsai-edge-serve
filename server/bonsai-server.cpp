@@ -34,9 +34,14 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <mutex>
+#include <thread>
 #include <sstream>
 #include <string>
+#include <memory>
 #include <vector>
 
 using json = nlohmann::json;
@@ -151,6 +156,8 @@ struct GenParams {
     float  min_p       = 0.0f;
     uint32_t seed      = LLAMA_DEFAULT_SEED;
     std::vector<std::string> stop;
+    std::string grammar;   // GBNF; constrains sampling to a formal language
+    bool use_cache = true;
 };
 
 class Engine {
@@ -159,11 +166,15 @@ public:
     llama_context * ctx   = nullptr;
     const llama_vocab * vocab = nullptr;
     std::mutex mu;                 // one generation at a time; requests queue
-    std::vector<llama_token> cache_tokens;  // prompt + generated, resident in KV
+    std::vector<std::vector<llama_token>> cache_tokens;  // per slot: resident in KV
     bool recurrent = false;                 // hybrid/recurrent state cannot be truncated
     int n_ctx = 0;
 
-    bool load(const std::string & path, int ngl, int n_ctx_req, int n_threads) {
+    int n_slots = 1;
+
+    bool load(const std::string & path, int ngl, int n_ctx_req, int n_threads,
+              int slots, ggml_type kv_type) {
+        n_slots = slots;
         llama_model_params mp = llama_model_default_params();
         mp.n_gpu_layers = ngl;
         model = llama_model_load_from_file(path.c_str(), mp);
@@ -171,15 +182,19 @@ public:
         vocab = llama_model_get_vocab(model);
 
         llama_context_params cp = llama_context_default_params();
-        cp.n_ctx       = n_ctx_req;
+        // n_ctx is the TOTAL across sequences, so each slot gets n_ctx/slots.
+        cp.n_ctx       = (uint32_t) n_ctx_req * slots;
+        cp.n_seq_max   = (uint32_t) slots;
         cp.n_batch     = 2048;
         cp.n_ubatch    = 512;
         cp.n_threads   = n_threads;
         cp.n_threads_batch = n_threads;
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+        cp.type_k = kv_type;
+        cp.type_v = kv_type;
         ctx = llama_init_from_model(model, cp);
         if (!ctx) return false;
-        n_ctx = (int) llama_n_ctx(ctx);
+        n_ctx = (int) llama_n_ctx(ctx) / slots;   // per-sequence budget
         recurrent = llama_model_is_recurrent(model) || llama_model_is_hybrid(model);
         return true;
     }
@@ -209,6 +224,23 @@ public:
     llama_sampler * make_sampler(const GenParams & gp) {
         auto sp = llama_sampler_chain_default_params();
         llama_sampler * s = llama_sampler_chain_init(sp);
+        // Grammar goes FIRST: it masks out every token the formal language
+        // forbids, and the temperature/top-k/top-p stages then choose among
+        // what remains. Applying it after truncation could leave an empty
+        // candidate set when the sampler has already discarded every legal
+        // token.
+        if (!gp.grammar.empty()) {
+            llama_sampler * g = llama_sampler_init_grammar(vocab, gp.grammar.c_str(), "root");
+            if (g) {
+                llama_sampler_chain_add(s, g);
+            } else {
+                // A malformed grammar must not silently degrade to
+                // unconstrained sampling -- the caller asked for a
+                // guarantee. The request is rejected before we get here;
+                // this is the belt-and-braces path.
+                fprintf(stderr, "warning: grammar failed to compile, refusing to sample unconstrained\n");
+            }
+        }
         if (gp.temperature <= 0.0f) {
             // Greedy. Exact and reproducible -- the mode every gate uses.
             llama_sampler_chain_add(s, llama_sampler_init_greedy());
@@ -236,14 +268,15 @@ public:
     // the resident tokens must be a strict prefix of the new prompt. Any
     // divergence -- including stepping back a single token -- forces a full
     // reset. On a pure-attention model the ordinary LCP rule applies.
-    size_t reusable_prefix(const std::vector<llama_token> & prompt) const {
+    size_t reusable_prefix(int slot, const std::vector<llama_token> & prompt) const {
+        const auto & resident = cache_tokens[slot];
         size_t i = 0;
-        const size_t n = std::min(cache_tokens.size(), prompt.size());
-        while (i < n && cache_tokens[i] == prompt[i]) i++;
+        const size_t n = std::min(resident.size(), prompt.size());
+        while (i < n && resident[i] == prompt[i]) i++;
 
         if (recurrent) {
-            if (i < cache_tokens.size()) return 0;  // truncation: unsafe
-            if (i == prompt.size())      return 0;  // nothing left to decode
+            if (i < resident.size()) return 0;      // truncation: unsafe
+            if (i == prompt.size())  return 0;      // nothing left to decode
             return i;                               // pure append: safe
         }
 
@@ -254,8 +287,19 @@ public:
     }
 };
 
-// The callback returns false to abort generation (client disconnected).
-using TokenCb = std::function<bool(const std::string & piece)>;
+// ------------------------------------------------------------- scheduler
+// Continuous batching.
+//
+// Decode is weight-bandwidth-bound: a step reads all 6.66 GB of weights
+// regardless of how many sequences are advancing. So running S sequences in
+// one batch costs barely more than running one, and aggregate throughput
+// scales nearly with S. That is the largest serving win available on this
+// box, and it is why the server owns a scheduler rather than generating
+// inline on the request thread.
+//
+// Each slot is an independent llama sequence (seq_id == slot index) with its
+// own recurrent state -- the context is created with n_seq_max = slots, so
+// the GDN state is allocated per slot up front.
 
 struct GenStats {
     int    n_prompt = 0, n_cached = 0, n_generated = 0, n_lcp = 0;
@@ -263,107 +307,264 @@ struct GenStats {
     std::string finish_reason = "stop";
 };
 
-static bool generate(Engine & eng, const std::vector<llama_token> & prompt,
-                     const GenParams & gp, const TokenCb & on_token,
-                     GenStats & st, std::string & err, bool use_cache = true) {
-    if ((int) prompt.size() + gp.n_predict > eng.n_ctx) {
-        err = "prompt + max_tokens exceeds context (" +
-              std::to_string(prompt.size()) + " + " +
-              std::to_string(gp.n_predict) + " > " + std::to_string(eng.n_ctx) + ")";
-        return false;
-    }
+struct Slot {
+    int id = 0;
+    bool busy = false;
+    // `busy` stays true until the HTTP thread releases the slot, which can
+    // be several scheduler iterations after generation ends. Without a
+    // separate `done`, the loop keeps appending tokens to a finished slot
+    // -- burning decode steps and eventually running its position past
+    // n_ctx, which surfaces as a 500.
+    bool done = false;
 
-    // NOTE ON REPRODUCIBILITY: a cached prefill and a fresh prefill are not
-    // numerically identical. Reusing N tokens means the tail is decoded in a
-    // differently-shaped batch, which changes reduction order and therefore
-    // the low bits of the logits. Greedy output is reproducible for a FIXED
-    // cache state, not across cache states. Gates that need bit-stability
-    // must pass cache_prompt=false, exactly as bench/gate_determinism.sh does.
-    llama_memory_t mem = llama_get_memory(eng.ctx);
-    size_t keep = 0;
-    {   // raw LCP, for telemetry -- distinguishes "prefix diverged" from
-        // "prefix matched but reuse was refused as unsafe"
-        size_t i = 0;
-        const size_t n = std::min(eng.cache_tokens.size(), prompt.size());
-        while (i < n && eng.cache_tokens[i] == prompt[i]) i++;
-        st.n_lcp = (int) i;
-    }
-    if (use_cache) {
-        keep = eng.reusable_prefix(prompt);
-    } else {
-        llama_memory_clear(mem, true);
-        eng.cache_tokens.clear();
-    }
-    st.n_prompt = (int) prompt.size();
-    st.n_cached = (int) keep;
-
-    // Drop everything after the shared prefix, then decode only the tail.
-    llama_memory_seq_rm(mem, 0, (llama_pos) keep, -1);
-
-    const double t_start = now_s();
-
-    std::vector<llama_token> todo(prompt.begin() + keep, prompt.end());
-    llama_batch batch = llama_batch_get_one(todo.data(), (int32_t) todo.size());
-    if (llama_decode(eng.ctx, batch) != 0) {
-        err = "llama_decode failed on the prompt";
-        return false;
-    }
-    const double t_prefill = now_s();
-    st.prefill_s = t_prefill - t_start;
-
-    llama_sampler * smpl = eng.make_sampler(gp);
-    std::string tail;                 // rolling buffer for stop-string match
-    size_t longest_stop = 0;
-    for (const auto & s : gp.stop) longest_stop = std::max(longest_stop, s.size());
-
-    bool aborted = false;
+    std::vector<llama_token> prompt;
     std::vector<llama_token> generated;
-    for (int i = 0; i < gp.n_predict; i++) {
-        llama_token tok = llama_sampler_sample(smpl, eng.ctx, -1);
-        if (llama_vocab_is_eog(eng.vocab, tok)) { st.finish_reason = "stop"; break; }
+    GenParams gp;
+    llama_sampler * smpl = nullptr;
 
-        const std::string piece = eng.detokenize(tok);
-        generated.push_back(tok);
-        st.n_generated++;
-        if (st.ttft_s == 0) st.ttft_s = now_s() - t_start;
+    size_t n_prefilled = 0;      // how much of `prompt` is in the KV
+    double t_start = 0, t_prefill_done = 0;
+    GenStats st;
+    std::string tail;            // rolling buffer for stop-string matching
 
-        // Stop strings can straddle token boundaries, so match on a rolling
-        // tail rather than on the individual piece.
-        bool hit_stop = false;
-        if (!gp.stop.empty()) {
-            tail += piece;
-            for (const auto & s : gp.stop) {
-                if (!s.empty() && tail.find(s) != std::string::npos) { hit_stop = true; break; }
-            }
-            if (tail.size() > 2 * longest_stop + 16) {
-                tail.erase(0, tail.size() - (2 * longest_stop + 16));
-            }
+    // handoff to the HTTP thread
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<std::string> out;
+    bool finished = false;
+    bool cancel = false;
+    std::string error;
+};
+
+class Scheduler {
+public:
+    Engine & eng;
+    // deque, not vector: Slot owns a mutex and a condition_variable, so it
+    // is neither movable nor copyable and vector::resize cannot build it.
+    std::deque<Slot> slots;
+    std::mutex mu;                    // guards slot allocation + the batch loop
+    std::condition_variable work_cv;
+    std::thread th;
+    std::atomic<bool> stop{false};
+    llama_batch batch{};
+
+    explicit Scheduler(Engine & e) : eng(e) {
+        for (int i = 0; i < eng.n_slots; i++) {
+            slots.emplace_back();
+            slots.back().id = i;
         }
+        eng.cache_tokens.assign(eng.n_slots, {});
+        batch = llama_batch_init(2048, 0, eng.n_slots);
+    }
 
-        if (!on_token(piece)) { aborted = true; st.finish_reason = "abort"; break; }
-        if (hit_stop) { st.finish_reason = "stop"; break; }
+    ~Scheduler() {
+        stop = true;
+        work_cv.notify_all();
+        if (th.joinable()) th.join();
+        llama_batch_free(batch);
+    }
 
-        if (i + 1 == gp.n_predict) { st.finish_reason = "length"; break; }
+    void start() { th = std::thread([this]{ loop(); }); }
 
-        batch = llama_batch_get_one(&tok, 1);
-        if (llama_decode(eng.ctx, batch) != 0) {
-            err = "llama_decode failed during generation";
-            llama_sampler_free(smpl);
-            return false;
+    // Returns nullptr if every slot is busy.
+    Slot * acquire(const std::vector<llama_token> & prompt, const GenParams & gp,
+                   std::string & err) {
+        std::lock_guard<std::mutex> lk(mu);
+        for (auto & sl : slots) {
+            if (sl.busy) continue;
+            if ((int) prompt.size() + gp.n_predict > eng.n_ctx) {
+                err = "prompt + max_tokens exceeds the per-slot context (" +
+                      std::to_string(prompt.size()) + " + " +
+                      std::to_string(gp.n_predict) + " > " +
+                      std::to_string(eng.n_ctx) + ")";
+                return nullptr;
+            }
+            sl.busy = true;
+            sl.prompt = prompt;
+            sl.gp = gp;
+            sl.generated.clear();
+            sl.out.clear();
+            sl.tail.clear();
+            sl.finished = false;
+            sl.done = false;
+            sl.cancel = false;
+            sl.error.clear();
+            sl.st = GenStats{};
+            sl.smpl = eng.make_sampler(gp);
+            sl.t_start = now_s();
+            sl.t_prefill_done = 0;
+
+            // Prefix reuse, subject to the hybrid rule (see reusable_prefix).
+            size_t keep = 0;
+            {
+                const auto & res = eng.cache_tokens[sl.id];
+                size_t i = 0;
+                const size_t n = std::min(res.size(), prompt.size());
+                while (i < n && res[i] == prompt[i]) i++;
+                sl.st.n_lcp = (int) i;
+            }
+            if (gp.use_cache) keep = eng.reusable_prefix(sl.id, prompt);
+            else {
+                llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, -1, -1);
+                eng.cache_tokens[sl.id].clear();
+            }
+            llama_memory_seq_rm(llama_get_memory(eng.ctx), sl.id, (llama_pos) keep, -1);
+            sl.n_prefilled = keep;
+            sl.st.n_prompt = (int) prompt.size();
+            sl.st.n_cached = (int) keep;
+
+            work_cv.notify_one();
+            return &sl;
+        }
+        err = "all " + std::to_string(eng.n_slots) + " slots busy";
+        return nullptr;
+    }
+
+    void release(Slot & sl) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (sl.smpl) { llama_sampler_free(sl.smpl); sl.smpl = nullptr; }
+        sl.busy = false;
+    }
+
+private:
+    void finish(Slot & sl, const std::string & reason, const std::string & err = "") {
+        if (sl.done) return;
+        sl.done = true;
+        sl.st.finish_reason = reason;
+        sl.st.decode_s = now_s() - (sl.t_prefill_done > 0 ? sl.t_prefill_done : sl.t_start);
+        // Record what is RESIDENT: prompt + everything generated.
+        auto & res = eng.cache_tokens[sl.id];
+        res = sl.prompt;
+        res.insert(res.end(), sl.generated.begin(), sl.generated.end());
+        std::lock_guard<std::mutex> lk(sl.mu);
+        sl.error = err;
+        sl.finished = true;
+        sl.cv.notify_all();
+    }
+
+    void loop() {
+        while (!stop) {
+            std::unique_lock<std::mutex> lk(mu);
+            bool any = false;
+            for (auto & sl : slots) if (sl.busy && !sl.done) { any = true; break; }
+            if (!any) {
+                work_cv.wait_for(lk, std::chrono::milliseconds(20));
+                continue;
+            }
+
+            // ---- build one batch across every active slot
+            batch.n_tokens = 0;
+            struct Out { Slot * sl; int idx; };
+            std::vector<Out> outs;
+
+            for (auto & sl : slots) {
+                if (!sl.busy || sl.done) continue;
+                if (sl.n_prefilled < sl.prompt.size()) {
+                    // Prefill chunk. Cap so one long prompt cannot starve
+                    // the other slots for an unbounded time.
+                    const size_t remain = sl.prompt.size() - sl.n_prefilled;
+                    const size_t room   = (size_t) (2048 - batch.n_tokens);
+                    const size_t take   = std::min({remain, room, (size_t) 512});
+                    for (size_t i = 0; i < take; i++) {
+                        const int j = batch.n_tokens;
+                        batch.token[j]    = sl.prompt[sl.n_prefilled + i];
+                        batch.pos[j]      = (llama_pos) (sl.n_prefilled + i);
+                        batch.n_seq_id[j] = 1;
+                        batch.seq_id[j][0] = sl.id;
+                        const bool last = (sl.n_prefilled + i + 1 == sl.prompt.size());
+                        batch.logits[j]   = last;
+                        batch.n_tokens++;
+                        if (last) outs.push_back({&sl, j});
+                    }
+                    sl.n_prefilled += take;
+                } else {
+                    // Decode: one token, the last thing this slot produced.
+                    if (batch.n_tokens >= 2048) continue;
+                    const int j = batch.n_tokens;
+                    batch.token[j]    = sl.generated.empty()
+                                          ? sl.prompt.back() : sl.generated.back();
+                    batch.pos[j]      = (llama_pos) (sl.prompt.size() + sl.generated.size() - 1);
+                    batch.n_seq_id[j] = 1;
+                    batch.seq_id[j][0] = sl.id;
+                    batch.logits[j]   = true;
+                    batch.n_tokens++;
+                    outs.push_back({&sl, j});
+                }
+            }
+
+            if (batch.n_tokens == 0) { lk.unlock(); continue; }
+
+            const int rc = llama_decode(eng.ctx, batch);
+            if (rc != 0) {
+                for (auto & sl : slots)
+                    if (sl.busy) finish(sl, "error", "llama_decode failed");
+                lk.unlock();
+                continue;
+            }
+
+            // ---- sample per slot
+            for (auto & o : outs) {
+                Slot & sl = *o.sl;
+                if (!sl.busy || sl.done) continue;
+                if (sl.t_prefill_done == 0) {
+                    sl.t_prefill_done = now_s();
+                    sl.st.prefill_s = sl.t_prefill_done - sl.t_start;
+                }
+                bool cancelled;
+                { std::lock_guard<std::mutex> slk(sl.mu); cancelled = sl.cancel; }
+                if (cancelled) { finish(sl, "abort"); continue; }
+
+                const llama_token tok = llama_sampler_sample(sl.smpl, eng.ctx, o.idx);
+                if (llama_vocab_is_eog(eng.vocab, tok)) { finish(sl, "stop"); continue; }
+
+                llama_sampler_accept(sl.smpl, tok);
+                sl.generated.push_back(tok);
+                sl.st.n_generated++;
+                if (sl.st.ttft_s == 0) sl.st.ttft_s = now_s() - sl.t_start;
+
+                const std::string piece = eng.detokenize(tok);
+
+                bool hit_stop = false;
+                if (!sl.gp.stop.empty()) {
+                    sl.tail += piece;
+                    for (const auto & ss : sl.gp.stop)
+                        if (!ss.empty() && sl.tail.find(ss) != std::string::npos) {
+                            hit_stop = true; break;
+                        }
+                    if (sl.tail.size() > 256) sl.tail.erase(0, sl.tail.size() - 256);
+                }
+
+                { std::lock_guard<std::mutex> slk(sl.mu);
+                  sl.out.push_back(piece);
+                  sl.cv.notify_all(); }
+
+                if (hit_stop) { finish(sl, "stop"); continue; }
+                if (sl.st.n_generated >= sl.gp.n_predict) { finish(sl, "length"); continue; }
+            }
+            lk.unlock();
         }
     }
-    llama_sampler_free(smpl);
-    st.decode_s = now_s() - t_prefill;
+};
 
-    // Record what is now RESIDENT, which is prompt + everything generated --
-    // not just the prompt. Recording only the prompt is what made a repeated
-    // request continue the previous answer: the next call saw a full prefix
-    // match, kept the KV, and the recurrent state still held the generated
-    // tokens.
-    eng.cache_tokens = prompt;
-    eng.cache_tokens.insert(eng.cache_tokens.end(), generated.begin(), generated.end());
-    (void) aborted;
-    return true;
+// Drain a slot, feeding each piece to `on_token`; returns when generation
+// ends. `on_token` returning false cancels.
+static void consume(Slot & sl, const std::function<bool(const std::string &)> & on_token) {
+    for (;;) {
+        std::unique_lock<std::mutex> lk(sl.mu);
+        sl.cv.wait(lk, [&]{ return !sl.out.empty() || sl.finished; });
+        while (!sl.out.empty()) {
+            const std::string piece = sl.out.front();
+            sl.out.pop_front();
+            lk.unlock();
+            if (!on_token(piece)) {
+                std::lock_guard<std::mutex> l2(sl.mu);
+                sl.cancel = true;
+                return;
+            }
+            lk.lock();
+        }
+        if (sl.finished) return;
+    }
 }
 
 // ------------------------------------------------------------ chat template
@@ -427,6 +628,29 @@ static GenParams parse_gen_params(const json & body, int default_predict) {
             for (const auto & s : body["stop"])
                 if (s.is_string()) gp.stop.push_back(s.get<std::string>());
     }
+    // Structured output. Either an explicit GBNF grammar, or OpenAI's
+    // response_format. json_object is the common case and needs no schema.
+    if (body.contains("grammar") && body["grammar"].is_string()) {
+        gp.grammar = body["grammar"].get<std::string>();
+    } else if (body.contains("response_format")) {
+        const auto & rf = body["response_format"];
+        const std::string type = rf.value("type", "");
+        if (type == "json_object" || type == "json_schema") {
+            // Minimal self-contained JSON grammar. Kept inline rather than
+            // pulled from common/json-schema-to-grammar.h so this binary
+            // does not need libllama-common.
+            gp.grammar =
+                "root   ::= object\n"
+                "value  ::= object | array | string | number | (\"true\" | \"false\" | \"null\") ws\n"
+                "object ::= \"{\" ws ( string \":\" ws value (\",\" ws string \":\" ws value)* )? \"}\" ws\n"
+                "array  ::= \"[\" ws ( value (\",\" ws value)* )? \"]\" ws\n"
+                "string ::= \"\\\"\" ( [^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\" ([\"\\\\bfnrt/] | \"u\" [0-9a-fA-F]{4}) )* \"\\\"\" ws\n"
+                "number ::= (\"-\"? ([0-9] | [1-9] [0-9]{0,15})) (\".\" [0-9]+)? ([eE] [-+]? [0-9]{1,4})? ws\n"
+                "ws     ::= | \" \" | \"\\n\" [ \\t]{0,20}\n";
+        }
+    }
+
+    gp.use_cache = body.value("cache_prompt", true);
     if (gp.n_predict <= 0) gp.n_predict = default_predict;
     return gp;
 }
@@ -446,6 +670,8 @@ int main(int argc, char ** argv) {
     std::string model_path, variant = "ternary", speculate = "auto";
     std::string host = "0.0.0.0", webui_path;
     int port = 8080, n_ctx = 16384, ngl = 999, n_threads = -1, default_predict = 512;
+    int n_slots = 4;
+    std::string kv_type = "q8_0";
     bool deterministic = true, preflight = true;
     bonsai::Backend backend = bonsai::Backend::CPU;
     bool backend_set = false;
@@ -462,6 +688,8 @@ int main(int argc, char ** argv) {
         else if (a == "-ngl")                         ngl = atoi(next().c_str());
         else if (a == "-t" || a == "--threads")       n_threads = atoi(next().c_str());
         else if (a == "--max-tokens")                 default_predict = atoi(next().c_str());
+        else if (a == "--slots" || a == "-np")        n_slots = atoi(next().c_str());
+        else if (a == "-ctk" || a == "--cache-type")  kv_type = next();
         else if (a == "--webui")                      webui_path = next();
         else if (a == "--backend") {
             const std::string b = next();
@@ -487,6 +715,11 @@ int main(int argc, char ** argv) {
 "  -ngl N                layers offloaded to GPU, default 999 (0 = CPU only)\n"
 "  -t, --threads N       CPU threads (default 12 on CPU -- NOT 14, see /v1/policy)\n"
 "      --max-tokens N    default max_tokens when a request omits it\n"
+"      --slots N, -np N  concurrent sequences, default 4. Decode is weight-\n"
+"                        bandwidth-bound, so N sequences cost barely more\n"
+"                        than one and aggregate throughput scales with N\n"
+"      -ctk TYPE         KV cache type: q8_0 (default) or f16. q8_0 halves\n"
+"                        the cache at 262144 ctx for no measurable cost\n"
 "      --webui PATH      serve this HTML file at /\n"
 "      --no-deterministic  allow the racy-but-1%%-faster Vulkan graph optimizer\n"
 "      --no-preflight    skip the startup determinism probe\n"
@@ -529,36 +762,39 @@ int main(int argc, char ** argv) {
                "    DSpark until the verify/rollback loop is ported and gated.\n");
     }
 
+    ggml_type kvt = GGML_TYPE_Q8_0;
+    if      (kv_type == "f16")  kvt = GGML_TYPE_F16;
+    else if (kv_type == "q8_0") kvt = GGML_TYPE_Q8_0;
+    else if (kv_type == "q4_0") kvt = GGML_TYPE_Q4_0;
+    else { fprintf(stderr, "error: unknown -ctk %s\n", kv_type.c_str()); return 2; }
+
+    if (n_slots < 1) n_slots = 1;
+
     Engine eng;
     printf("loading %s ...\n", model_path.c_str());
     fflush(stdout);
-    if (!eng.load(model_path, ngl, n_ctx, pol.n_threads)) {
+    if (!eng.load(model_path, ngl, n_ctx, pol.n_threads, n_slots, kvt)) {
         fprintf(stderr, "error: failed to load model\n");
         return 1;
     }
-    printf("loaded: n_ctx=%d\n", eng.n_ctx);
+    printf("loaded: %d slot(s) x n_ctx=%d, KV %s\n", n_slots, eng.n_ctx, kv_type.c_str());
+
+    auto sched = std::make_unique<Scheduler>(eng);
+    sched->start();
 
     // ---- preflight: is this backend even deterministic?
     if (preflight) {
-        GenParams gp; gp.temperature = 0.0f; gp.n_predict = 16;
-        std::string a, b, err;
+        GenParams gp; gp.temperature = 0.0f; gp.n_predict = 16; gp.use_cache = false;
+        std::string a, b, e;
+        auto toks = eng.tokenize("def binary_search(arr, target):", true);
         for (int rep = 0; rep < 2; rep++) {
+            Slot * sl = sched->acquire(toks, gp, e);
+            if (!sl) { fprintf(stderr, "preflight: %s\n", e.c_str()); break; }
             std::string out;
-            eng.cache_tokens.clear();   // force a real prefill each time --
-                                        // caching would replay the first one
-                                        // and hide exactly this class of bug
-            llama_memory_clear(llama_get_memory(eng.ctx), true);
-            auto toks = eng.tokenize("def binary_search(arr, target):", true);
-            GenStats st;
-            if (!generate(eng, toks, gp, [&](const std::string & p) {
-                    out += p; return true; }, st, err)) {
-                fprintf(stderr, "preflight: generation failed: %s\n", err.c_str());
-                break;
-            }
+            consume(*sl, [&](const std::string & pc) { out += pc; return true; });
+            sched->release(*sl);
             (rep == 0 ? a : b) = out;
         }
-        eng.cache_tokens.clear();
-        llama_memory_clear(llama_get_memory(eng.ctx), true);
         if (!a.empty() && a == b) {
             printf("preflight: deterministic over 2 identical greedy requests\n");
         } else if (!a.empty()) {
@@ -606,7 +842,8 @@ int main(int argc, char ** argv) {
         res.set_content(json{{"status", "ok"},
                              {"backend", bonsai::backend_name(pol.backend)},
                              {"variant", pol.variant},
-                             {"speculation", pol.speculate}}.dump(), "application/json");
+                             {"speculation", pol.speculate},
+                             {"slots", eng.n_slots}}.dump(), "application/json");
     });
 
     srv.Get("/metrics", [&](const httplib::Request &, httplib::Response & res) {
@@ -625,6 +862,7 @@ int main(int argc, char ** argv) {
                              {"speculation", pol.speculate},
                              {"deterministic", pol.deterministic},
                              {"n_threads", pol.n_threads},
+                             {"slots", eng.n_slots},
                              {"reasons", pol.reasons}}.dump(2), "application/json");
     });
 
@@ -689,23 +927,29 @@ int main(int argc, char ** argv) {
 
         const GenParams gp = parse_gen_params(body, default_predict);
         const bool stream = body.value("stream", false);
-        // llama.cpp-compatible knob. Default on (the agentic win), but a
-        // correctness gate needs it off -- see the note in generate().
-        const bool use_cache = body.value("cache_prompt", true);
         const std::string id = gen_id(chat ? "chatcmpl" : "cmpl");
         const uint64_t created = (uint64_t) now_s();
 
         if (!stream) {
-            std::lock_guard<std::mutex> lk(eng.mu);
             auto toks = eng.tokenize(prompt_text, true);
+            Slot * slp = sched->acquire(toks, gp, err);
+            if (!slp) {
+                g_metrics.errors++;
+                res.status = err.rfind("all ", 0) == 0 ? 503 : 400;
+                res.set_content(error_json(err, "server_error", res.status).dump(),
+                                "application/json");
+                return;
+            }
+            Slot & sl = *slp;
             std::string full;
-            GenStats st;
-            if (!generate(eng, toks, gp,
-                          [&](const std::string & p) { full += p; return true; },
-                          st, err, use_cache)) {
+            consume(sl, [&](const std::string & p) { full += p; return true; });
+            const GenStats st = sl.st;
+            const std::string serr = sl.error;
+            sched->release(sl);
+            if (!serr.empty()) {
                 g_metrics.errors++;
                 res.status = 500;
-                res.set_content(error_json(err, "server_error", 500).dump(),
+                res.set_content(error_json(serr, "server_error", 500).dump(),
                                 "application/json");
                 return;
             }
@@ -741,7 +985,7 @@ int main(int argc, char ** argv) {
                 {"prefill_tok_s", st.prefill_s > 0 ? (st.n_prompt - st.n_cached) / st.prefill_s : 0.0},
                 {"ttft_s", st.ttft_s},
                 {"cached_tokens", st.n_cached},
-                {"cache_resident", (int) eng.cache_tokens.size()},
+                {"cache_resident", (int) eng.cache_tokens[0].size()},
                 {"lcp", st.n_lcp}};
             res.set_content(out.dump(), "application/json");
             return;
@@ -750,9 +994,8 @@ int main(int argc, char ** argv) {
         // ---- streaming (SSE)
         res.set_header("Cache-Control", "no-cache");
         res.set_chunked_content_provider("text/event-stream",
-            [&eng, gp, prompt_text, id, created, chat, use_cache, &pol]
+            [&eng, &sched, gp, prompt_text, id, created, chat, &pol]
             (size_t, httplib::DataSink & sink) {
-                std::lock_guard<std::mutex> lk(eng.mu);
                 ReasoningSplitter sp;
                 std::string err2;
 
@@ -771,8 +1014,16 @@ int main(int argc, char ** argv) {
                 }
 
                 auto toks = eng.tokenize(prompt_text, true);
-                GenStats st;
-                const bool ok = generate(eng, toks, gp,
+                Slot * slp = sched->acquire(toks, gp, err2);
+                if (!slp) {
+                    const std::string e = "data: " +
+                        error_json(err2, "server_error", 503).dump() + "\n\n";
+                    sink.write(e.data(), e.size());
+                    sink.done();
+                    return true;
+                }
+                Slot & sl = *slp;
+                consume(sl,
                     [&](const std::string & piece) -> bool {
                         json delta;
                         if (chat) {
@@ -793,7 +1044,9 @@ int main(int argc, char ** argv) {
                             {"choices", json::array({json{
                                 {"index", 0}, {"text", piece},
                                 {"finish_reason", nullptr}}})}});
-                    }, st, err2, use_cache);
+                    });
+                const GenStats st = sl.st;
+                sched->release(sl);
 
                 if (chat) {   // flush any held-back tail
                     std::string c, r;
@@ -810,7 +1063,6 @@ int main(int argc, char ** argv) {
                     }
                 }
 
-                if (!ok) g_metrics.errors++;
                 g_metrics.record(st.n_prompt, st.n_cached, st.n_generated,
                                  st.prefill_s, st.decode_s, st.ttft_s);
 

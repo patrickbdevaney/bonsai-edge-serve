@@ -1,0 +1,84 @@
+Continuous batching on a hybrid model: correct, and it buys latency, not throughput
+====================================================================================
+
+Decode is weight-bandwidth-bound -- a step reads all 6.66 GB of weights
+regardless of how many sequences advance -- so batching S sequences into one
+`llama_decode` should cost barely more than one and multiply aggregate
+throughput. `bonsai-server` now implements exactly that: N slots, one
+`llama_seq_id` each, a scheduler thread that builds one batch per step
+across every active slot.
+
+It works. It does not make the machine faster.
+
+MEASURED (ternary Q2_0, Vulkan, 4 slots, 80 tokens each)
+---------------------------------------------------------
+  concurrency   aggregate tok/s   per stream
+      1             14.33           14.33
+      2             14.70            7.35
+      4             14.70            3.67
+
+Aggregate throughput is FLAT. Per-stream throughput falls exactly in
+proportion. The four streams produce correct, distinct answers.
+
+WHY: THE RECURRENT PATH SPLITS BATCHES BY SEQUENCE
+---------------------------------------------------
+From the fork's own source, `src/llama-memory-recurrent.cpp:440`:
+
+    // if all tokens are output, split by sequence
+    ubatch = balloc.split_seq(n_ubatch);
+
+Decode is precisely the case where every token in the batch is an output --
+each slot needs logits for its next token. So a 4-token batch drawn from 4
+sequences is split into four single-token ubatches, each of which streams the
+full weight set. Four sequences, four weight reads, no sharing.
+
+This is structural, not a bug in the scheduler, and it is specific to
+recurrent/hybrid memory. Batching WITHIN one sequence works fine and is
+worth a lot -- prefill runs at ~345 tok/s against decode's 15.8 -- because
+those tokens share a sequence and a single ubatch.
+
+The adjacent branch in the same function notes that `split_equal()` would be
+possible but "needs dedicated multi-seq rollback testing" when the rollback
+ring is active. So the limitation is known upstream and deliberate, not
+accidental.
+
+WHAT MULTI-SLOT DOES BUY: LATENCY FAIRNESS
+-------------------------------------------
+Tokens interleave across slots even though they do not share a weight read,
+so a short request is no longer stuck behind a long one. Four concurrent
+requests, one asking for 200 tokens and three short:
+
+  request            TTFT      completed
+  200-token essay    2.35s      15.27s
+  short              0.80s       1.27s
+  short              1.27s       1.27s
+
+With a single slot the short requests would have waited for the 200-token
+request to finish -- roughly 15s instead of 1.3s. That is the honest win:
+**head-of-line blocking removed, throughput unchanged.** For an agentic
+workload with mixed request sizes that matters; for a throughput benchmark
+it does not.
+
+A BUG THIS FOUND, WORTH RECORDING
+----------------------------------
+The first implementation measured 8.16 tok/s single-stream (down from 14.4)
+and 4.53 tok/s aggregate at concurrency 4, with one request returning HTTP
+500. Cause: `busy` stays true until the HTTP thread releases a slot, which is
+several scheduler iterations after generation ends, so the loop kept
+appending tokens to finished slots -- burning decode steps and eventually
+running a slot's position past `n_ctx`, which surfaced as the 500.
+
+A separate `done` flag, set in `finish()` and checked everywhere `busy` is,
+fixed both symptoms at once. The tell was that single-stream throughput
+dropped when nothing about single-stream decode had changed; a concurrency
+feature that slows down the concurrency-1 case is reporting a bug.
+
+RECOMMENDATION
+--------------
+Keep `--slots 4` as the default: it costs nothing (single-stream is 14.45
+with 1 slot and 14.52 with 4), the per-slot recurrent state is already
+allocated by `n_seq_max`, and it removes head-of-line blocking. Do not quote
+it as a throughput feature.
+
+The throughput win needs `split_equal()` on the recurrent path, which is an
+upstream change with real correctness risk attached to it.

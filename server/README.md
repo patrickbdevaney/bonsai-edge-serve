@@ -95,6 +95,54 @@ state checkpoints (`llama_state_seq_save_data` / `restore`), which is what
 the fork's own server does — its logs show `created context checkpoint …
 149.626 MiB`. That is real future work, not something to fake.
 
+## Concurrency: 4 slots, and what they are actually for
+
+`--slots N` (default 4) runs N independent sequences through one scheduler
+thread that builds a single batch per step. Each slot is its own
+`llama_seq_id` with its own recurrent state, allocated up front by
+`n_seq_max`.
+
+**It does not increase throughput, and the reason is structural.** Decode is
+weight-bandwidth-bound, so batching *should* be nearly free -- but
+`src/llama-memory-recurrent.cpp:440` splits a batch by sequence whenever
+every token is an output, which is exactly the decode case. Four sequences
+become four single-token ubatches and four full weight reads:
+
+| concurrency | aggregate tok/s | per stream |
+| --: | --: | --: |
+| 1 | 14.33 | 14.33 |
+| 2 | 14.70 | 7.35 |
+| 4 | 14.70 | 3.67 |
+
+**What it buys is latency.** Tokens interleave, so a short request no longer
+waits behind a long one -- with a 200-token request and three short ones in
+flight, the short ones completed at 1.27s instead of ~15s. Single-stream
+throughput is unaffected (14.45 with 1 slot, 14.52 with 4), so the default
+costs nothing. `results/concurrency.txt`.
+
+## Structured output
+
+`response_format: {"type": "json_object"}` constrains sampling to a JSON
+grammar; `"grammar": "<GBNF>"` takes an arbitrary one. The grammar sampler
+runs first in the chain, before temperature and truncation, so the formal
+language masks the candidate set rather than being applied to an
+already-truncated one.
+
+```bash
+curl localhost:8085/v1/chat/completions -d '{"messages":[...],
+     "response_format":{"type":"json_object"}}'      # always valid JSON
+curl localhost:8085/v1/chat/completions -d '{"messages":[...],
+     "grammar":"root ::= (\"yes\" | \"no\")"}'        # yes or no, nothing else
+```
+
+## KV cache
+
+`-ctk q8_0` is the default. On this model it halves the KV cache for no
+measurable cost -- at 262144 context, 16384 -> 8704 MiB with unchanged
+throughput and character-identical greedy output. `-ctk f16` restores the
+uncompressed cache. See `results/context-scaling.txt`; decode speed is flat
+from 4K to 262144.
+
 ## Speculative decoding
 
 Not implemented in this binary yet. DSpark needs the draft/verify/rollback
