@@ -39,7 +39,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W20 | **Located the Vulkan 2x gap: load width, not bandwidth** | Vulkan reaches 245-250 GB/s (= CUDA) with wide loads, 180 lane-strided; our GEMV is at 130 | `ea555c2` |
 | W21 | **Decode speed is flat from 4K to 262144 context** | 15.33 -> 15.83 tok/s across a 64x context increase; full 256K fits in ~25 GiB | `03d1a8f` |
 | W22 | q8_0 KV cache is free on this model | 262144 ctx: KV 16384 -> 8704 MiB (-47%), throughput unchanged, greedy output identical | `03d1a8f` |
-| W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `pending` |
+| W23 | Continuous batching + structured output + q8_0 KV in `bonsai-server` | 4 slots remove head-of-line blocking (short request 15.3s -> 1.3s); JSON/GBNF constrained decoding | `2a2bd75` |
 
 ---
 
