@@ -343,34 +343,43 @@ single thread, GB/s of weight bytes:
 | :-- | --: | --: |
 | scalar per-element extract | 0.20 | 0.02 |
 | AVX2 maddubs, best R | 6.87 | 3.13 |
-| **AVX-VNNI vpdpbusd, best R** | **8.64** | **4.12** |
+| AVX-VNNI vpdpbusd, best R | 8.64 | 4.12 |
+| + vscale (deferred reduction) | 10.96 | **5.46** |
+| **+ software prefetch (PF=1024)** | **12.22** | 5.21 |
 
-**~43x for ternary, ~200x for 1-bit** over per-element extract, and
-VNNI is worth +26-32% over the maddubs spelling of the same math. As on
-ARM, row blocking is nearly flat single-threaded -- unpack-ALU bound,
-not latency bound.
+VNNI is worth +26-32% over the maddubs spelling of the same math.
+**vscale** is the v2 restructure: the v1 kernels paid an `hsum256` plus
+a scalar convert+fma per block per row to apply the per-block scale;
+since the scale is uniform across lanes, v2 defers the reduction --
+`fma(broadcast(scale), cvtepi32_ps(acc))` per block, one horizontal sum
+per row. ~5 fewer uops per 32 weight bytes on an issue-bound loop:
++27% Q2_0, +39% Q1_0. It costs bit-exactness (lanes sum in a different
+order); a double-precision oracle puts vscale at 3.5e-05 vs the scalar
+reference's own 4.7e-05, so it is the *more* accurate ordering, and the
+bench validates it at a documented 1e-3 float gate. Prefetch buys Q2_0
+another +11% and does nothing for Q1_0, whose stream runs at half the
+byte rate. Row blocking stays nearly flat, as on ARM.
 
-Threaded (VNNI R=4), same streaming shape:
+Threaded, same streaming shape:
 
 | Config | Q2_0 | Q1_0 |
 | :-- | --: | --: |
-| 1 thread | 7.0 | 3.3 |
-| unpinned, best t | 24.7 | 18.8 |
-| **pinned P-cores, t=32** | **30.3** | **24.8** |
-| pinned E-cores, best t | 23.4 | 15.7 |
+| v1 static split, unpinned best | 24.7 | 18.8 |
+| v1 static split, pinned P-cores | 30.3 | 24.8 |
+| **v2 + work-stealing, unpinned** | **28.2** (t=6) | **29.8** (t=8) |
+| v2 + work-stealing, pinned P | 28.0 | 28.9 |
 | DRAM ceiling (fp32 sgemv, threaded) | 31.0 | -- |
 
-**Q2_0 saturates the measured DRAM ceiling.** Pinned to P-cores
-(`taskset -c 0-15`, `OMP_PLACES=cores OMP_PROC_BIND=spread`) the kernel
-sustains 30.3 GB/s of weight bytes against the 31.0 GB/s the same DRAM
-gives OpenBLAS sgemv -- there is nothing left on the table for the
-2-bit decode path on this machine. Unpinned costs ~18% (the scheduler
-mixes E-cores in), which is the number a real server should care about:
-pin the decode threads. Q1_0 tops out at 80% of the ceiling -- the
-same ALU-bound shape as ARM (same weights/instruction, half the bytes),
-and the same T-MAC LUT argument (`VPSHUFB` for `vqtbl1q`) with the same
-row-interleaving cost applies; prototype standalone before bending the
-shared format.
+**Both formats now saturate the measured DRAM ceiling, and neither
+needs pinning.** The v1 static row split handed P- and E-cores equal
+work, so on a hybrid part the E-cores straggled: unpinned Q1_0 lost 20%
+and the fix was manual pinning. v2 pulls 256-row chunks from a shared
+queue (`schedule(dynamic)`), so each core type contributes what it can:
+unpinned Q1_0 goes 18.8 -> 29.8 GB/s -- the ALU-bound format is the one
+work-stealing rescues, because recruiting E-core ALU is exactly what it
+was missing -- and it reaches the ceiling at 8 threads where v1 needed
+32 pinned to get to 80%. Q2_0's ceiling was already reachable; the win
+there is needing 6 unpinned threads instead of 32 pinned ones.
 
 The BLAS control row: the same matrix dequantized to fp32 through
 OpenBLAS `cblas_sgemv` takes **238 ms single-threaded against 31 ms**
@@ -404,17 +413,36 @@ contradicts a control measured in the same process is broken until
 proven otherwise -- the contradiction was visible in the first
 published table.
 
+### The Q1_0 LUT, scoped for x86 and deprioritized
+
+The ARM section flags a T-MAC register-LUT kernel as the fix for 1-bit
+being ALU-bound, worth ~4.4x there. The x86 op-count model says the
+same trick does not transfer to this ISA tier, and it is worth showing
+why rather than porting it on faith. The ARM win has two ingredients:
+`SDOT` retires only 16 weights per instruction, and `TBL` retires 32
+lookup lanes with cheap byte adds. On x86, `VPDPBUSD` already retires
+32 weights per instruction -- the dot side starts twice as wide -- and
+AVX2's `VPSHUFB` offers the same 32 lanes but no `vpermb`, so the
+exact int16 table must be split into lo/hi byte planes and re-widened
+(2 shuffles + ~10 support uops per 128 MACs against ~12.5 for the VNNI
+path). Modeled, not measured: **~1.0-1.4x**, against ARM's measured
+4.4x -- not worth the row-interleaved second weight layout it would
+cost the shared format. And since work-stealing already puts threaded
+Q1_0 at the DRAM ceiling, a LUT could only help the few-thread case.
+Revisit on AVX-512 VBMI hosts (`vpermb`: 64 lanes, no plane split),
+where the model tips the other way.
+
 ### What that means end to end
 
 Projecting weights-only bandwidth onto the real model (ternary 7.17 GB,
-1-bit 3.80 GB of weights per token), at the measured pinned 30.3 / 24.8
-GB/s: **~4.2 tok/s ternary, ~6.5 tok/s 1-bit** as this machine's
-weights-bandwidth roofline for a decode step built on these kernels.
-Unlike the Thor CPU result, 1-bit wins end to end here even without the
-LUT kernel -- the DRAM is slow enough relative to 24 cores of unpack
-ALU that halving the bytes still pays. For comparison, fp32 at the
-same ceiling would be ~0.3 tok/s: the format is the difference between
-"unusable" and "usable-slow" on commodity x86.
+1-bit 3.80 GB of weights per token), at the measured unpinned 28-30 GB/s
+for both formats: **~4.2 tok/s ternary, ~7.8 tok/s 1-bit** as this
+machine's weights-bandwidth roofline for a decode step built on these
+kernels -- no pinning, 6-8 threads. Unlike the Thor CPU result, 1-bit
+wins end to end here: the DRAM is slow enough relative to 24 cores of
+unpack ALU that halving the bytes pays in full. For comparison, fp32 at
+the same ceiling would be ~0.3 tok/s: the format is the difference
+between "unusable" and "usable-slow" on commodity x86.
 
 ## Building
 

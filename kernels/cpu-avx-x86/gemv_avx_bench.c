@@ -154,6 +154,13 @@ static inline int hsum256_epi32(__m256i v) {
     return hsum128_epi32(_mm_add_epi32(_mm256_castsi256_si128(v),
                                        _mm256_extracti128_si256(v, 1)));
 }
+static inline float hsum256_ps(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v),
+                          _mm256_extractf128_ps(v, 1));
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_movehdup_ps(s));
+    return _mm_cvtss_f32(s);
+}
 
 // ------------------------------------------------------- q2, R rows
 // One 32-byte weight load is a whole block. Per-byte shifts have no
@@ -264,6 +271,109 @@ DEF_Q1(1, vnni, DOT_VNNI) DEF_Q1(2, vnni, DOT_VNNI)
 DEF_Q1(4, vnni, DOT_VNNI) DEF_Q1(8, vnni, DOT_VNNI)
 #endif
 
+// ---------------------------------------------- v2: vectorized scale
+// The v1 kernels pay hsum256 (5 uops, ~10 cycles of dependent latency)
+// plus a scalar convert+fma PER BLOCK PER ROW to apply the per-block
+// scale. But the scale is uniform across the accumulator's 8 lanes, so
+// the reduction can be deferred: keep a float accumulator per row,
+// fma(broadcast(scale), cvtepi32_ps(acc)) per block, and hsum ONCE per
+// row. The asum correction stays scalar (one fma per block per row).
+// Costs bit-exactness -- lanes now sum in a different order than the
+// scalar reference -- for ~5 fewer uops per 32 weight bytes on a loop
+// the v1 ladder showed to be issue-bound. PF > 0 adds a software
+// prefetch that far ahead on the weight stream.
+#ifdef BONSAI_HAVE_VNNI
+#define Q2_VS_BODY(R, PF)                                                     \
+    const int nblk = K / BONSAI_QK;                                           \
+    const __m256i m = _mm256_set1_epi8(0x03);                                 \
+    for (int r0 = 0; r0 + (R) <= N; r0 += (R)) {                              \
+        __m256 accv[R]; float acs[R];                                         \
+        for (int i = 0; i < (R); ++i) { accv[i] = _mm256_setzero_ps();        \
+                                        acs[i] = 0.f; }                       \
+        for (int b = 0; b < nblk; ++b) {                                      \
+            const int8_t *pb = P + b * BONSAI_QK;                             \
+            const __m256i x0 = _mm256_loadu_si256((const __m256i*)(pb +  0)); \
+            const __m256i x1 = _mm256_loadu_si256((const __m256i*)(pb + 32)); \
+            const __m256i x2 = _mm256_loadu_si256((const __m256i*)(pb + 64)); \
+            const __m256i x3 = _mm256_loadu_si256((const __m256i*)(pb + 96)); \
+            __m256i acc[R];                                                   \
+            for (int i = 0; i < (R); ++i) acc[i] = _mm256_setzero_si256();    \
+            for (int rr = 0; rr < (R); ++rr) {                                \
+                const uint8_t *wp = W + (size_t)(r0+rr)*(K/4)                 \
+                                    + b*BONSAI_Q2_BYTES;                      \
+                if ((PF) > 0) _mm_prefetch((const char*)wp + (PF),            \
+                                           _MM_HINT_T0);                      \
+                const __m256i v = _mm256_loadu_si256((const __m256i*)wp);     \
+                acc[rr] = DOT_VNNI(acc[rr], _mm256_and_si256(v, m), x0);      \
+                acc[rr] = DOT_VNNI(acc[rr],                                   \
+                    _mm256_and_si256(_mm256_srli_epi16(v, 2), m), x1);        \
+                acc[rr] = DOT_VNNI(acc[rr],                                   \
+                    _mm256_and_si256(_mm256_srli_epi16(v, 4), m), x2);        \
+                acc[rr] = DOT_VNNI(acc[rr],                                   \
+                    _mm256_and_si256(_mm256_srli_epi16(v, 6), m), x3);        \
+            }                                                                 \
+            for (int rr = 0; rr < (R); ++rr) {                                \
+                const float s = S[(size_t)(r0+rr)*nblk + b];                  \
+                accv[rr] = _mm256_fmadd_ps(_mm256_set1_ps(s),                 \
+                    _mm256_cvtepi32_ps(acc[rr]), accv[rr]);                   \
+                acs[rr] += s * (float)ASUM[b];                                \
+            }                                                                 \
+        }                                                                     \
+        for (int rr = 0; rr < (R); ++rr)                                      \
+            out[r0+rr] = (hsum256_ps(accv[rr]) - acs[rr]) * da;               \
+    }
+
+#define Q1_VS_BODY(R, PF)                                                     \
+    const int nblk = K / BONSAI_QK;                                           \
+    const __m256i m = _mm256_set1_epi8(0x01);                                 \
+    for (int r0 = 0; r0 + (R) <= N; r0 += (R)) {                              \
+        __m256 accv[R]; float acs[R];                                         \
+        for (int i = 0; i < (R); ++i) { accv[i] = _mm256_setzero_ps();        \
+                                        acs[i] = 0.f; }                       \
+        for (int b = 0; b < nblk; b += 2) {                                   \
+            const int8_t *pb = P + b * BONSAI_QK;                             \
+            __m256i x[8];                                                     \
+            for (int q = 0; q < 8; ++q)                                       \
+                x[q] = _mm256_loadu_si256((const __m256i*)(pb + q*32));       \
+            __m256i acc[R];                                                   \
+            for (int i = 0; i < (R); ++i) acc[i] = _mm256_setzero_si256();    \
+            for (int rr = 0; rr < (R); ++rr) {                                \
+                const uint8_t *wp = W + (size_t)(r0+rr)*(K/8)                 \
+                                    + b*BONSAI_Q1_BYTES;                      \
+                if ((PF) > 0) _mm_prefetch((const char*)wp + (PF),            \
+                                           _MM_HINT_T0);                      \
+                const __m256i v = _mm256_loadu_si256((const __m256i*)wp);     \
+                for (int q = 0; q < 8; ++q)                                   \
+                    acc[rr] = DOT_VNNI(acc[rr], _mm256_and_si256(             \
+                        _mm256_srli_epi16(v, q), m), x[q]);                   \
+            }                                                                 \
+            for (int rr = 0; rr < (R); ++rr) {                                \
+                const float s0 = S[(size_t)(r0+rr)*nblk + b];                 \
+                const float s1 = S[(size_t)(r0+rr)*nblk + b+1];               \
+                const __m256 sv = _mm256_insertf128_ps(                       \
+                    _mm256_castps128_ps256(_mm_set1_ps(s0)),                  \
+                    _mm_set1_ps(s1), 1);                                      \
+                accv[rr] = _mm256_fmadd_ps(sv,                                \
+                    _mm256_cvtepi32_ps(acc[rr]), accv[rr]);                   \
+                acs[rr] += s0 * (float)ASUM[b] + s1 * (float)ASUM[b+1];       \
+            }                                                                 \
+        }                                                                     \
+        for (int rr = 0; rr < (R); ++rr)                                      \
+            out[r0+rr] = (2.f * hsum256_ps(accv[rr]) - acs[rr]) * da;         \
+    }
+
+#define DEF_Q2VS(R, SUF, PF)                                                  \
+static void gemv_q2_vs##SUF##_r##R(const uint8_t *W, const float *S,          \
+                         const int8_t *P, const int32_t *ASUM, float da,      \
+                         float *out, int N, int K) { Q2_VS_BODY(R, PF) }
+#define DEF_Q1VS(R, SUF, PF)                                                  \
+static void gemv_q1_vs##SUF##_r##R(const uint8_t *W, const float *S,          \
+                         const int8_t *P, const int32_t *ASUM, float da,      \
+                         float *out, int N, int K) { Q1_VS_BODY(R, PF) }
+DEF_Q2VS(1, , 0) DEF_Q2VS(4, , 0) DEF_Q2VS(1, pf, 1024) DEF_Q2VS(4, pf, 1024)
+DEF_Q1VS(1, , 0) DEF_Q1VS(4, , 0) DEF_Q1VS(4, pf, 1024)
+#endif // BONSAI_HAVE_VNNI
+
 // ------------------------------------------------- threaded wrappers
 // Rows are embarrassingly parallel: each thread owns a disjoint row
 // range and writes disjoint outputs. Activations are read-only and
@@ -313,6 +423,43 @@ static void gemv_q1_mt(const uint8_t *W, const float *S, const int8_t *P,
                        P, ASUM, da, out + lo, hi - lo, K);
     }
 }
+
+// Dynamic-scheduled wrappers: fixed-size row chunks pulled from a
+// shared queue. On a hybrid part a static split hands P- and E-cores
+// equal work and the E-cores straggle; work-stealing lets both core
+// types contribute what they actually can. Chunk of 256 rows = 512 KiB
+// of Q2_0 at K=8192, big enough that queue traffic is noise.
+#ifdef BONSAI_HAVE_VNNI
+#define MTD_CH 256
+static void gemv_q2_mtd(const uint8_t *W, const float *S, const int8_t *P,
+                        const int32_t *ASUM, float da, float *out,
+                        int N, int K, int nth) {
+    const int nch = (N + MTD_CH - 1) / MTD_CH;
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(nth) schedule(dynamic, 1)
+#endif
+    for (int c = 0; c < nch; ++c) {
+        const int lo = c * MTD_CH;
+        const int hi = lo + MTD_CH > N ? N : lo + MTD_CH;
+        gemv_q2_vspf_r4(W + (size_t)lo * (K / 4), S + (size_t)lo * (K / BONSAI_QK),
+                        P, ASUM, da, out + lo, hi - lo, K);
+    }
+}
+static void gemv_q1_mtd(const uint8_t *W, const float *S, const int8_t *P,
+                        const int32_t *ASUM, float da, float *out,
+                        int N, int K, int nth) {
+    const int nch = (N + MTD_CH - 1) / MTD_CH;
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(nth) schedule(dynamic, 1)
+#endif
+    for (int c = 0; c < nch; ++c) {
+        const int lo = c * MTD_CH;
+        const int hi = lo + MTD_CH > N ? N : lo + MTD_CH;
+        gemv_q1_vspf_r4(W + (size_t)lo * (K / 8), S + (size_t)lo * (K / BONSAI_QK),
+                        P, ASUM, da, out + lo, hi - lo, K);
+    }
+}
+#endif // BONSAI_HAVE_VNNI
 
 // ------------------------------------------------- BLAS control row
 // The same matrix, dequantized to fp32, through cblas_sgemv. CBLAS ABI
@@ -425,6 +572,29 @@ int main(int argc, char **argv) {
     VALIDATE("q2 vnni 8 rows", gemv_q2_vnni_r8(q2r,S,P2,ASUM,da,o,NREF,K), ref2);
     VALIDATE("q1 vnni 1 row",  gemv_q1_vnni_r1(q1r,S,P1,ASUM,da,o,NREF,K), ref1);
     VALIDATE("q1 vnni 8 rows", gemv_q1_vnni_r8(q1r,S,P1,ASUM,da,o,NREF,K), ref1);
+    // v2 kernels reduce lanes in a different order than the scalar
+    // reference: float-accurate, not bit-exact (like CUDA and Vulkan).
+    // The tolerance is against the FLOAT reference, which is itself a
+    // rounding away from truth: at K=8192 a double-precision oracle
+    // puts the scalar reference at 4.7e-05 error and vscale at 3.5e-05
+    // -- vscale is the more accurate of the two -- yet they sit up to
+    // ~1.1e-04 apart from each other. So the reordered kernels get a
+    // 1e-3 gate: loose enough for two valid orderings to disagree,
+    // tight enough that any real indexing bug (typically > 1e-2) still
+    // fails.
+    #define VALIDATE_F(name, call, ref) do { \
+        memset(o, 0, N*sizeof(float)); call; \
+        double worst = 0; \
+        for (int vi = 0; vi < NREF; ++vi) { \
+            double d = fabs((ref)[vi]) > 1e-6 ? fabs((ref)[vi]) : 1e-6; \
+            double e = fabs(o[vi]-(ref)[vi])/d; if (e > worst) worst = e; } \
+        printf("  %-24s max rel err %.3e  %s\n", name, worst, \
+               worst < 1e-3 ? "OK (float)" : "*** MISMATCH ***"); \
+        if (!(worst < 1e-3)) ok = 0; } while (0)
+    VALIDATE_F("q2 vscale 1 row", gemv_q2_vs_r1(q2r,S,P2,ASUM,da,o,NREF,K), ref2);
+    VALIDATE_F("q2 vscale 4 rows",gemv_q2_vs_r4(q2r,S,P2,ASUM,da,o,NREF,K), ref2);
+    VALIDATE_F("q1 vscale 1 row", gemv_q1_vs_r1(q1r,S,P1,ASUM,da,o,NREF,K), ref1);
+    VALIDATE_F("q1 vscale 4 rows",gemv_q1_vs_r4(q1r,S,P1,ASUM,da,o,NREF,K), ref1);
 #endif
 
 #ifdef USE_BLAS
@@ -479,6 +649,10 @@ int main(int argc, char **argv) {
     BENCH("q2 vnni 2 rows",  b2, gemv_q2_vnni_r2(q2r,S,P2,ASUM,da,o,N,K));
     BENCH("q2 vnni 4 rows",  b2, gemv_q2_vnni_r4(q2r,S,P2,ASUM,da,o,N,K));
     BENCH("q2 vnni 8 rows",  b2, gemv_q2_vnni_r8(q2r,S,P2,ASUM,da,o,N,K));
+    BENCH("q2 vscale 1 row", b2, gemv_q2_vs_r1(q2r,S,P2,ASUM,da,o,N,K));
+    BENCH("q2 vscale 4 rows",b2, gemv_q2_vs_r4(q2r,S,P2,ASUM,da,o,N,K));
+    BENCH("q2 vscale+pf 1 row", b2, gemv_q2_vspf_r1(q2r,S,P2,ASUM,da,o,N,K));
+    BENCH("q2 vscale+pf 4 rows",b2, gemv_q2_vspf_r4(q2r,S,P2,ASUM,da,o,N,K));
 #endif
     BENCH("q1 v0 scalar",    b1, gemv_q1_scalar(q1,S,A,da,o,N,K));
     BENCH("q1 avx2 1 row",   b1, gemv_q1_avx2_r1(q1r,S,P1,ASUM,da,o,N,K));
@@ -488,6 +662,9 @@ int main(int argc, char **argv) {
     BENCH("q1 vnni 1 row",   b1, gemv_q1_vnni_r1(q1r,S,P1,ASUM,da,o,N,K));
     BENCH("q1 vnni 4 rows",  b1, gemv_q1_vnni_r4(q1r,S,P1,ASUM,da,o,N,K));
     BENCH("q1 vnni 8 rows",  b1, gemv_q1_vnni_r8(q1r,S,P1,ASUM,da,o,N,K));
+    BENCH("q1 vscale 1 row", b1, gemv_q1_vs_r1(q1r,S,P1,ASUM,da,o,N,K));
+    BENCH("q1 vscale 4 rows",b1, gemv_q1_vs_r4(q1r,S,P1,ASUM,da,o,N,K));
+    BENCH("q1 vscale+pf 4 rows",b1, gemv_q1_vspf_r4(q1r,S,P1,ASUM,da,o,N,K));
 #endif
 
 #ifdef USE_BLAS
@@ -511,6 +688,18 @@ int main(int argc, char **argv) {
         snprintf(nm, sizeof nm, "q1 mt t=%d", sweep[i]);
         BENCH(nm, b1, gemv_q1_mt(q1r,S,P1,ASUM,da,o,N,K,sweep[i]));
     }
+#ifdef BONSAI_HAVE_VNNI
+    for (size_t i = 0; i < sizeof(sweep)/sizeof(*sweep); ++i) {
+        char nm[64];
+        snprintf(nm, sizeof nm, "q2 mtd t=%d", sweep[i]);
+        BENCH(nm, b2, gemv_q2_mtd(q2r,S,P2,ASUM,da,o,N,K,sweep[i]));
+    }
+    for (size_t i = 0; i < sizeof(sweep)/sizeof(*sweep); ++i) {
+        char nm[64];
+        snprintf(nm, sizeof nm, "q1 mtd t=%d", sweep[i]);
+        BENCH(nm, b1, gemv_q1_mtd(q1r,S,P1,ASUM,da,o,N,K,sweep[i]));
+    }
+#endif
 #ifdef USE_BLAS
     if (!mt_only)
     for (size_t i = 0; i < sizeof(sweep)/sizeof(*sweep); ++i) {
