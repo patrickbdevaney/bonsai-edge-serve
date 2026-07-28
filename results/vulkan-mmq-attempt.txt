@@ -1,5 +1,14 @@
-Vulkan MMQ for q1_0/q2_0: implemented, SEVEN gates found, still not dispatching
-==============================================================================
+Vulkan MMQ for q1_0/q2_0: RESOLVED -- gate 7 found, and the answer is "keep it off"
+===================================================================================
+
+STATUS: CLOSED as a negative result. Gate 7 was the coopmat branch (see
+RESOLUTION at the end). Forcing dispatch measures scalar integer-dot MMQ at
+0.36x / 0.45x of the dequant+coopmat path on Thor, so upstream's gating is
+correct and this path should stay off on any device with matrix cores.
+
+The original write-up follows unchanged; it is what led to the answer.
+
+--- ORIGINAL (while unresolved) ---
 
 STATUS: NOT WORKING. The code is in the tree and harmless -- decode is
 unchanged at 16.80 / 20.23 tok/s and op tests are 28/28 for both types -- but
@@ -71,3 +80,89 @@ possible that dequant+coopmat beats scalar int-dot MMQ, in which case the
 correct outcome is that this path stays off and the work is a negative
 result. That should be measured with a forced dispatch before more effort
 goes in.
+
+
+================================================================================
+RESOLUTION: gate 7 was the coopmat branch, and MMQ loses to it by 2-3x
+================================================================================
+
+GATE 7: THE SHADER LOADER HAS THREE MUTUALLY EXCLUSIVE BRANCHES
+----------------------------------------------------------------
+`ggml_vk_load_shaders` is structured as:
+
+  4017:  if (device->coopmat2)          { ... }
+  4099:  if (device->coopmat_support)   { ... }   <-- Thor lands HERE (KHR_coopmat)
+  4224:  if (device->fp16)              { ... }   <-- every CREATE_MMQ lives here
+  4430:  } else { ... }
+
+All MMQ registration -- for every quant type, not just ours -- sits in the
+`fp16` branch, which is only reached when the device has NO cooperative-matrix
+support. Thor has KHR_coopmat, so it takes the 4099 branch and creates no MMQ
+pipeline of any type. `pipeline_dequant_mul_mat_mat_q8_1[Q2_0]` stays empty,
+the mat-mat lookup returns nullptr, `quantize_y` is set false, and prefill
+runs dequant+coopmat.
+
+Nothing about q2_0/q1_0 was wrong. The pipelines were registered in a branch
+this device never enters.
+
+HOW IT WAS FOUND, AND THE MISSTEP ON THE WAY
+----------------------------------------------
+The plan recorded last time was right: print the flags and the pipeline
+pointers after init. Doing it produced NO OUTPUT AT ALL -- not even the
+`#else` arm that reports the feature macro being undefined.
+
+The first reading was "the debug code didn't get built". It had: the string
+was present in libggml-vulkan.so, twice, which also proved the `#else` arm was
+compiled out and therefore that GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT *was*
+defined. Compiled, present, never executed -- which localises the problem to
+an enclosing conditional and points straight at the branch structure.
+
+(One real mistake first: `cmake --build --target llama-bench` does not rebuild
+libggml-vulkan.so, so the first instrumented run used the old backend. The
+timestamp on the .so, not the build log, is what settles that.)
+
+A print that produces nothing is a measurement. It said "this code is
+unreachable", which is a stronger statement than any value it could have
+printed.
+
+THE MEASUREMENT THAT CLOSES IT
+-------------------------------
+`GGML_VK_FORCE_MMQ_COOPMAT=1` registers the q2_0/q1_0 MMQ pipelines inside the
+coopmat branch, so both paths can be compared on the same device and binary.
+
+  model         dequant + coopmat    forced scalar int-dot MMQ    ratio
+  ternary Q2_0      338.78 pp512            121.70 pp512          0.36x
+  1-bit   Q1_0      320.97 pp512            142.94 pp512          0.45x
+
+Scalar integer-dot MMQ is 2.2-2.8x SLOWER. That is the expected direction and
+the reason upstream gates MMQ to non-coopmat devices: the dequant path feeds
+Thor's tensor cores through KHR_coopmat, while these shaders are scalar
+`dotPacked4x8AccSat` and cannot use them at all. Prefill is compute-bound, so
+losing the matrix cores costs far more than saving the dequantisation.
+
+Decode is unaffected either way (16.55 / 20.18 tok/s), because decode uses
+MMVQ, which is a different path and remains the shipped W26 win.
+
+WHAT THIS MEANS FOR THE WORK
+-----------------------------
+The MMQ shaders, the shmem accounting, the block_a_cache layouts and the
+registration are correct and stay in the tree. They are simply for a device
+class this one is not: a Vulkan GPU with integer dot product but WITHOUT
+cooperative matrix. On such a device this is the right path and it is ready.
+
+On Thor the correct configuration is the one that was already running by
+default. The measurable outcome of this whole thread is therefore:
+
+  * the MMVQ decode win (W26), which shipped and stands
+  * a documented reason NOT to pursue MMQ prefill here
+  * `GGML_VK_FORCE_MMQ_COOPMAT=1`, which makes the comparison repeatable
+
+THE GENERALISABLE PART
+-----------------------
+Seven gates, every one failing closed and silently, and the seventh was not a
+gate on our type at all -- it was which of three mutually exclusive branches
+the device takes. Six type-specific checks were verified before the structural
+question ("is this code even reached on this device?") was asked, and that
+question was cheaper than all six.
+
+Ask what the device selects before verifying what the feature requires.

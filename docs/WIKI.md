@@ -46,6 +46,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W27 | **DSpark runs in-process in `bonsai-server`** | code 1.74x/1.80x, prose 1.49x/1.60x (ternary/1-bit); greedy identical to AR on 14/20 | `a7c5491` |
 | W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
 | W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
+| W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | pending |
 
 ---
 
@@ -429,6 +430,44 @@ not a win. Caching, reordering and reuse optimisations all make things
 faster *by doing less work*, so "faster" is exactly what a broken one looks
 like. Pair every such change with an output-equality assertion against the
 unoptimised path -- here, four lines of gate.
+
+### L14. Ask what the device SELECTS before verifying what the feature needs
+
+The Vulkan MMQ path was implemented, correct, registered, and never ran.
+Six separate type-specific gates were checked -- shader generation, shmem
+accounting, `block_a_size`, the `CREATE_MMQ` registration, the q8_1
+allow-list, pipeline creation -- and all six were fine.
+
+Gate 7 was not a gate on our type at all. `ggml_vk_load_shaders` has three
+mutually exclusive branches (`coopmat2` / `coopmat_support` / `fp16`), and
+**every** MMQ registration for **every** quant type lives in the last one,
+which is only reached on a device with no cooperative-matrix support. Thor
+has KHR_coopmat, so it takes the middle branch and creates no MMQ pipeline
+at all. Nothing about q2_0/q1_0 was wrong; the code was in a branch this
+device never enters.
+
+The structural question -- "is this code even reached on this hardware?" --
+was cheaper than any of the six feature-specific checks, and it was asked
+last. Ask it first.
+
+Two smaller things this run also taught:
+
+- **A print that produces nothing is a measurement.** The instrumentation
+  emitted no output, not even the `#else` arm reporting the feature macro
+  as undefined. First reading: "the debug code wasn't built". But the
+  string was in the `.so` *twice*, which simultaneously proved it was
+  built and that the `#else` was compiled out. Compiled, present, never
+  executed localises the fault to an enclosing conditional far faster than
+  any value it could have printed.
+- **`--target llama-bench` does not rebuild `libggml-vulkan.so`.** The
+  first instrumented run silently used the old backend. The `.so`
+  timestamp settles that; the build log does not.
+
+And the outcome is worth stating plainly: forcing dispatch measured scalar
+integer-dot MMQ at **0.36x/0.45x** of dequant+coopmat, so upstream's gating
+is correct and the right configuration on Thor was the one already running.
+The deliverable of the thread is a documented reason *not* to pursue it,
+plus `GGML_VK_FORCE_MMQ_COOPMAT=1` to make the comparison repeatable.
 
 ### L13. A test that compared two empty strings and reported PASS
 
