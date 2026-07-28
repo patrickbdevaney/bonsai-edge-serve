@@ -1,8 +1,34 @@
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index fd22aba11..b2b167dce 100644
+index fd22aba11..86a552ac8 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -4652,6 +4652,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -3454,6 +3454,13 @@ static bool ggml_vk_matmul_int_shmem_support(const vk_device& device, const std:
+         case GGML_TYPE_Q5_1:    block_a_size = std430_size({{16, 4}, {4, 4}, {fp2_size, fp2_align}});         break; // qs[16/4] + qh + dm(vec2)
+         case GGML_TYPE_Q8_0:    block_a_size = std430_size({{32, 4}, {fp_size,  fp_align}});                  break; // qs[8] + dm
+         case GGML_TYPE_MXFP4:   block_a_size = std430_size({{32, 4}, {fp_size,  fp_align}});                  break; // qs[8] + d
++        // Bonsai low-bit types. Absent from this switch they hit `default:
++        // return false`, which clears mul_mat_*_int[t], which stops
++        // CREATE_MMQ from making a pipeline, which makes the mat-mat lookup
++        // return nullptr and silently fall back to the dequant path. Four
++        // layers of "supported" all defaulting to no.
++        case GGML_TYPE_Q2_0:    block_a_size = std430_size({{ 8, 4}, {fp_size,  fp_align}});                  break; // qs[2] + d
++        case GGML_TYPE_Q1_0:    block_a_size = std430_size({{ 4, 4}, {fp_size,  fp_align}});                  break; // qs[1] + d
+         case GGML_TYPE_Q2_K:    block_a_size = std430_size({{ 8, 4}, {2, 2}, {fp2_size, fp2_align}});         break; // qs[2] + scales(u8vec2) + dm(vec2)
+         case GGML_TYPE_Q3_K:    block_a_size = std430_size({{16, 4}, {fp2_size, fp2_align}});                 break; // qs[4] + d_scales(vec2)
+         case GGML_TYPE_Q4_K:    block_a_size = std430_size({{16, 4}, {fp2_size, fp2_align}});                 break; // qs[4] + dm(vec2)
+@@ -4280,6 +4287,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+ 
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+         if (device->integer_dot_product) {
++            // Q2_0/Q1_0 (Bonsai). Registration is explicit per type -- generating
++            // the shader is not enough, the runtime silently falls back to the
++            // dequant matmul without this, which reads as "no speedup".
++            CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q2_0], matmul_q2_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
++            CREATE_MMQ(GGML_TYPE_Q1_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q1_0], matmul_q1_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+             CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_0], matmul_q4_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+             CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_1], matmul_q4_1_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+             CREATE_MMQ(GGML_TYPE_Q5_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q5_0], matmul_q5_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+@@ -4652,6 +4664,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                  const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
                  const uint32_t wg_size_subgroup_int = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size_int : (subgroup_size_int * 4);
  
@@ -14,7 +40,7 @@ index fd22aba11..b2b167dce 100644
                  ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_0][i], "mul_mat_vec_q4_0_q8_1_f32", arr_dmmv_q4_0_q8_1_f32_len[reduc], arr_dmmv_q4_0_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
                  ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q4_1][i], "mul_mat_vec_q4_1_q8_1_f32", arr_dmmv_q4_1_q8_1_f32_len[reduc], arr_dmmv_q4_1_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
                  ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_Q5_0][i], "mul_mat_vec_q5_0_q8_1_f32", arr_dmmv_q5_0_q8_1_f32_len[reduc], arr_dmmv_q5_0_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_stdq_int, 1, 1}, {wg_size_subgroup_int, 1*rm_stdq_int, i+1}, 1, true, use_subgroups, subgroup_size_int);
-@@ -6868,6 +6873,14 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
+@@ -6868,6 +6885,14 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec(ggml_backend_vk_context *
  
      if (b_type == GGML_TYPE_Q8_1) {
          switch (a_type) {
@@ -160,6 +186,120 @@ index 73cf9c799..045c57d1c 100644
  // Each iqs value maps to a 32-bit integer
  #if defined(DATA_A_Q4_0)
  // 2-byte loads for Q4_0 blocks (18 bytes)
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_funcs.glsl
+index 59931b04b..a1d58e0a5 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_funcs.glsl
+@@ -185,6 +185,81 @@ ACC_TYPE mmq_dot_product(const uint ib_a) {
+ 
+ // For k-quants, ib and iqs still assume 32-wide blocks, but k-quants are 256-wide
+ // iqs still refers to a 32-bit integer, meaning 0..7 for 32-wide quants
++#if defined(DATA_A_Q2_0)
++// Q2_0 (Bonsai ternary). `ib` counts 32-quant units, so the real 34-byte
++// block is ib/4 and the sub-block is ib%4. packed16 because a 34-byte block
++// is only 2-byte aligned -- a uint32_t member pads the std430 stride to 36
++// and misreads every block after the first.
++void block_a_to_shmem(const uint buf_ib, const uint ib, const uint iqs) {
++    const uint wi = ((ib % 4) * 2 + iqs) * 2;
++    buf_a[buf_ib].qs[iqs] = pack32(u16vec2(data_a_packed16[ib / 4].qs[wi    ],
++                                           data_a_packed16[ib / 4].qs[wi + 1]));
++    if (iqs == 0) {
++        buf_a[buf_ib].dm = FLOAT_TYPE(data_a[ib / 4].d);
++    }
++}
++
++void block_a_to_registers(const uint reg_ib, const uint buf_ib) {
++    cache_a[reg_ib].dm    = buf_a[buf_ib].dm;
++    cache_a[reg_ib].qs[0] = buf_a[buf_ib].qs[0];
++    cache_a[reg_ib].qs[1] = buf_a[buf_ib].qs[1];
++}
++
++// GGUF order: byte p of the word holds logical weights 4p..4p+3 at shifts
++// 0,2,4,6. Q2_K's `(w >> s) & 0x03030303` selects the same field from each
++// byte -- weights strided by 4 -- and would pair them with the wrong
++// activations while still producing plausible numbers.
++ACC_TYPE mmq_dot_product(const uint ib_a) {
++    int32_t q_sum = 0;
++    [[unroll]] for (uint iqs = 0; iqs < 8; iqs++) {
++        const uint w  = cache_a[ib_a].qs[iqs / 4];
++        const uint c4 = (w >> (8u * (iqs % 4))) & 0xFFu;
++        const int32_t codes = int32_t( (c4        & 3u)
++                                    | (((c4 >> 2) & 3u) <<  8)
++                                    | (((c4 >> 4) & 3u) << 16)
++                                    | (((c4 >> 6) & 3u) << 24));
++        q_sum += dotPacked4x8EXT(codes, cache_b.qs[iqs]);
++    }
++    // codes {0,1,2,3} are values {-1,0,1,2}: sum(v*b) = sum(c*b) - sum(b),
++    // and this call covers the whole 32-quant q8_1 block, so the correction
++    // takes all of ds.y.
++    return ACC_TYPE(float(cache_a[ib_a].dm)
++                    * (float(q_sum) * float(cache_b.ds.x) - float(cache_b.ds.y)));
++}
++#endif
++
++#if defined(DATA_A_Q1_0)
++// Q1_0 (Bonsai 1-bit), 18-byte block -> packed16 for the same reason.
++void block_a_to_shmem(const uint buf_ib, const uint ib, const uint iqs) {
++    const uint wi = (ib % 4) * 2;
++    buf_a[buf_ib].qs[0] = pack32(u16vec2(data_a_packed16[ib / 4].qs[wi    ],
++                                         data_a_packed16[ib / 4].qs[wi + 1]));
++    buf_a[buf_ib].dm = FLOAT_TYPE(data_a[ib / 4].d);
++}
++
++void block_a_to_registers(const uint reg_ib, const uint buf_ib) {
++    cache_a[reg_ib].dm    = buf_a[buf_ib].dm;
++    cache_a[reg_ib].qs[0] = buf_a[buf_ib].qs[0];
++}
++
++ACC_TYPE mmq_dot_product(const uint ib_a) {
++    const uint w = cache_a[ib_a].qs[0];
++    int32_t q_sum = 0;
++    // Spread 4 bits across 4 bytes with one multiply: bit i must land at
++    // bit 8i, so scaling by 1 + 2^7 + 2^14 + 2^21 places each and the mask
++    // drops the cross terms. Verified exhaustively over all 65536 x 4
++    // inputs against the shift/or form.
++    [[unroll]] for (uint iqs = 0; iqs < 8; iqs++) {
++        const uint n = (w >> (4u * iqs)) & 0xFu;
++        q_sum += dotPacked4x8EXT(int32_t((n * 0x00204081u) & 0x01010101u),
++                                 cache_b.qs[iqs]);
++    }
++    // bits {0,1} are values {-1,+1}: v = 2c - 1.
++    return ACC_TYPE(float(cache_a[ib_a].dm)
++                    * (2.0 * float(q_sum) * float(cache_b.ds.x) - float(cache_b.ds.y)));
++}
++#endif
++
+ #if defined(DATA_A_Q2_K)
+ // 4-byte loads for Q2_K blocks (84 bytes)
+ void block_a_to_shmem(const uint buf_ib, const uint ib, const uint iqs) {
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_shmem_types.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_shmem_types.glsl
+index 79c933f40..54cc50f3c 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_shmem_types.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mmq_shmem_types.glsl
+@@ -53,6 +53,23 @@ struct block_a_cache {
+     int32_t qs[8];
+     FLOAT_TYPE d;
+ };
++#elif defined(DATA_A_Q2_0)
++// 4 quants per byte, so LOAD_VEC_A = 16 and iqs is 0 or 1 across BK=32.
++// Each iqs step stores one 32-bit word = 16 quants, in GGUF order; the
++// unpack happens in mmq_dot_product.
++#define QUANT_R_MMQ 4
++struct block_a_cache {
++    uint32_t qs[2];
++    FLOAT_TYPE dm;
++};
++#elif defined(DATA_A_Q1_0)
++// 8 quants per byte -> LOAD_VEC_A = 32 = BK, so iqs is always 0 and one
++// 32-bit word carries the whole 32-quant unit.
++#define QUANT_R_MMQ 8
++struct block_a_cache {
++    uint32_t qs[1];
++    FLOAT_TYPE dm;
++};
+ #elif defined(DATA_A_Q2_K)
+ #define QUANT_R_MMQ 4
+ struct block_a_cache {
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl
 index f31d79a61..07a9b65f2 100644
 --- a/ggml/src/ggml-vulkan/vulkan-shaders/types.glsl
@@ -209,9 +349,18 @@ index f31d79a61..07a9b65f2 100644
  
  
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
-index fc0dd01c4..f9651bbec 100644
+index fc0dd01c4..a4825fe2e 100644
 --- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
 +++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -591,7 +591,7 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
+ 
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+         // Integer dot mmq performs better with f32 accumulators
+-        if (!f16acc && !coopmat && !coopmat2 && (is_legacy_quant(tname) || is_k_quant(tname) || tname == "mxfp4")) {
++        if (!f16acc && !coopmat && !coopmat2 && (is_legacy_quant(tname) || is_k_quant(tname) || tname == "mxfp4" || tname == "q2_0" || tname == "q1_0")) {
+             string_to_spv(shader_name + "_" + tname + "_q8_1", "mul_mmq.comp", merge_maps(merge_maps(base_dict, float_type_dict), {{data_a_key, "1"}, {"D_TYPE", "float"},}), fp16, coopmat, coopmat2, f16acc);
+         }
+ #endif
 @@ -707,7 +707,7 @@ void process_shaders() {
  
          // mul mat vec with integer dot product

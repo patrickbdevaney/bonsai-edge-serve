@@ -1,0 +1,73 @@
+Vulkan MMQ for q1_0/q2_0: implemented, SEVEN gates found, still not dispatching
+==============================================================================
+
+STATUS: NOT WORKING. The code is in the tree and harmless -- decode is
+unchanged at 16.80 / 20.23 tok/s and op tests are 28/28 for both types -- but
+prefill is unchanged too (344.78 / 327.67), and the perf logger shows no
+`quantize` op, which means the q8_1 matrix path is never taken.
+
+Recorded rather than reverted because the reverse-engineering is the
+expensive part and it is now done.
+
+WHAT IS IMPLEMENTED
+-------------------
+  mul_mmq_shmem_types.glsl   block_a_cache for both types + QUANT_R_MMQ
+                             (Q2_0: 4 quants/byte -> LOAD_VEC_A 16, qs[2];
+                              Q1_0: 8 quants/byte -> LOAD_VEC_A 32, qs[1])
+  mul_mmq_funcs.glsl         block_a_to_shmem / block_a_to_registers /
+                             mmq_dot_product for both, GGUF-order extraction
+                             for Q2_0 and the multiply bit-spread for Q1_0
+  vulkan-shaders-gen.cpp     both types added to the MMQ generate gate
+  ggml-vulkan.cpp ~4286      CREATE_MMQ pipeline registration
+  ggml-vulkan.cpp ~3452      block_a_size entries in
+                             ggml_vk_matmul_int_shmem_support
+
+THE GATE CHAIN, WHICH IS THE ACTUAL FINDING
+--------------------------------------------
+Getting a type onto the Vulkan integer-dot MMQ path requires SEVEN separate
+opt-ins, and every one of them fails CLOSED and SILENTLY:
+
+  1. glslc implements GL_EXT_integer_dot_product
+  2. type in the MMQ generate list          (vulkan-shaders-gen.cpp ~594)
+  3. QUANT_R_MMQ + block_a_cache            (mul_mmq_shmem_types.glsl)
+  4. the three shader functions             (mul_mmq_funcs.glsl)
+  5. block_a_size in the shmem-support switch, whose `default:` is
+     `return false` -- which clears device->mul_mat_{s,m,l}_int[t]
+  6. CREATE_MMQ registration, itself guarded by those same flags
+  7. something still unidentified
+
+Miss any one and the result is identical: `ggml_vk_get_mul_mat_mat_pipeline`
+returns nullptr for Q8_1, the caller sets `quantize_y = false`, and the
+dequant matmul runs. No error, no warning, correct output, unchanged speed.
+
+That is the same shape as the MMVQ integration (WIKI L8), where a missing
+entry in one allow-list cost a 34% win and looked exactly like "the kernel
+is no faster". The lesson generalises: **in this subsystem, "no speedup" is
+the default failure mode, so a null result is not evidence that a kernel is
+slow -- it is first evidence that the kernel did not run.** The cheap check
+is the perf logger: if `quantize_q8_1` does not appear, nothing downstream
+of it matters.
+
+WHERE TO LOOK NEXT
+------------------
+`quantize_y` at ggml-vulkan.cpp:8257 is set before the pipeline lookup and
+depends only on `integer_dot_product`, contiguity and `(ne11*ne10) % 4`. All
+hold here. So `ggml_vk_get_mul_mat_mat_pipeline(..., GGML_TYPE_Q8_1, ...)`
+is returning nullptr via `pipelines->is_empty()` at :6824, meaning none of
+the s/m/l variants were created. Instrument
+`ggml_vk_matmul_int_shmem_support` for these two types and print
+`device->mul_mat_{s,m,l}_int[GGML_TYPE_Q2_0]` after initialisation -- that
+distinguishes "flags cleared" from "CREATE_MMQ skipped for another reason"
+in one run, and it is the check that should have been done before writing
+any shader code.
+
+IS IT WORTH FINISHING?
+----------------------
+Uncertain, and worth saying so. Thor has KHR_coopmat, so prefill already
+runs on tensor cores via the dequant path at 345 tok/s. The MMQ shaders
+here are the NON-coopmat scalar integer-dot variants (the generate gate is
+`!coopmat && !coopmat2`). On a device with matrix cores it is entirely
+possible that dequant+coopmat beats scalar int-dot MMQ, in which case the
+correct outcome is that this path stays off and the work is a negative
+result. That should be measured with a forced dispatch before more effort
+goes in.
