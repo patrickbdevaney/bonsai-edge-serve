@@ -1,0 +1,71 @@
+#version 450
+// Pure streaming-read bandwidth probe for Vulkan on Thor.
+//
+// This is the CONTROL the GEMV numbers were missing. Every Vulkan kernel we
+// have written lands at 100-115 GB/s, and ggml's own MMVQ lands at 93-122,
+// while the CUDA GEMV reaches 241 GB/s on the identical shape and the
+// measured achievable read is 244.7 GB/s. Two readings fit that:
+//
+//   (a) the Vulkan kernels are leaving ~2x on the table, or
+//   (b) ~120 GB/s is what the Vulkan path can do on this device at all.
+//
+// A GEMV cannot distinguish them because it also does arithmetic. This
+// shader does nothing but read: no unpacking, no dot product, one add per
+// loaded word so the loads cannot be eliminated. Whatever it reaches is the
+// ceiling any Vulkan kernel here can aim at.
+//
+// build: glslc -O bandwidth.comp -o bandwidth.spv
+//        glslc -O -DVEC4 bandwidth.comp -o bandwidth_vec4.spv
+
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+
+layout(local_size_x = 256) in;
+
+#ifdef VEC4
+layout(binding = 0) readonly buffer A { uvec4 data[]; };
+#else
+layout(binding = 0) readonly buffer A { uint data[]; };
+#endif
+// SCALAR4: read four CONSECUTIVE uints from a 4-aligned base out of a plain
+// uint[] buffer. This decides the practical question: if the compiler can
+// merge these into one 128-bit transaction, a Vulkan GEMV only needs its
+// loop restructured. If it cannot, the weights must be repacked into a
+// 16-byte-aligned layout, which is far more work.
+layout(binding = 1) writeonly buffer O { uint out_data[]; };
+
+layout(push_constant) uniform P {
+    uint n_elem;      // number of elements in `data`
+    uint n_iter;      // grid-stride passes
+};
+
+void main() {
+    const uint tid    = gl_GlobalInvocationID.x;
+    const uint stride = gl_NumWorkGroups.x * 256u;
+
+    uint acc = 0u;
+    // Grid-stride so consecutive lanes touch consecutive words: lane i
+    // reads word i, so a subgroup covers a contiguous span and the memory
+    // system can merge it into wide transactions. This is the same access
+    // pattern the GEMV kernels use, which is what makes it a fair ceiling.
+    for (uint pass = 0u; pass < n_iter; ++pass) {
+        for (uint i = tid; i < n_elem; i += stride) {
+#if defined(VEC4)
+            const uvec4 v = data[i];
+            acc += v.x + v.y + v.z + v.w;
+#elif defined(SCALAR4)
+            const uint j = i * 4u;
+            if (j + 3u < n_elem) {
+                acc += data[j] + data[j+1u] + data[j+2u] + data[j+3u];
+            }
+#else
+            acc += data[i];
+#endif
+        }
+    }
+
+    // Consume acc so nothing is dead-code eliminated, but make the store
+    // effectively unreachable so it costs no bandwidth.
+    if (acc == 0xFFFFFFFFu) {
+        out_data[tid] = acc;
+    }
+}

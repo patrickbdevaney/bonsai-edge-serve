@@ -103,12 +103,47 @@ void main() {
     for (int r = 0; r < ROWS; ++r) accf[r] = 0.0;
 
     if (row0 < pc.N) {
+#ifdef WIDE4
+        // WIDE4: each lane reads FOUR CONSECUTIVE words per row, issued
+        // BACK TO BACK before anything is consumed, so the driver can merge
+        // them into one wide transaction.
+        //
+        // Measured on Thor (kernels/vulkan/bandwidth_vk.cpp): a Vulkan
+        // shader reading one 32-bit word per lane per iteration tops out at
+        // 135-180 GB/s, while uvec4 loads AND four consecutive scalar loads
+        // both reach 241-249 GB/s -- matching CUDA's 244.7. The merge only
+        // happens for loads that are consecutive PER LANE and adjacent in
+        // program order; interleaving other work between them loses it,
+        // which an earlier version of this variant demonstrated by going
+        // SLOWER (105 vs 130 GB/s).
+        //
+        // This is the opposite of the CUDA result, where explicit uint4
+        // loads bought nothing because the hardware already coalesced the
+        // lane-strided form (WIKI K2/v6). That rule does not port.
+        for (int wbase = lane * 4; wbase < nw; wbase += LANES * 4) {
+            uint vv[ROWS][4];
+            for (int r = 0; r < ROWS; ++r) {
+                const int base = (row0 + r) * nw + wbase;
+                vv[r][0] = w[base + 0];
+                vv[r][1] = w[base + 1];
+                vv[r][2] = w[base + 2];
+                vv[r][3] = w[base + 3];
+            }
+            for (int sub = 0; sub < 4; ++sub) {
+            const int widx = wbase + sub;
+#else
         for (int widx = lane; widx < nw; widx += LANES) {
+#endif
             // Issue all ROWS weight loads before consuming any: these are
             // independent and this is the whole source of memory-level
             // parallelism at batch 1.
+#ifndef WIDE4
             uint v[ROWS];
             for (int r = 0; r < ROWS; ++r) v[r] = w[(row0 + r) * nw + widx];
+#else
+            uint v[ROWS];
+            for (int r = 0; r < ROWS; ++r) v[r] = vv[r][sub];
+#endif
 
             const uint a0 = a[widx * 4 + 0];
             const uint a1 = a[widx * 4 + 1];
@@ -140,6 +175,9 @@ void main() {
 #endif
                 accf[r] += s[(row0 + r) * nblk + (widx >> 3)] * float(d - cs);
             }
+#ifdef WIDE4
+          }
+#endif
         }
     }
 

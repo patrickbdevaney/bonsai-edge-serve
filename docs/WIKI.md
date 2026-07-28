@@ -36,6 +36,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W17 | **Root-caused the Vulkan correctness gap: it was a race, not `n_probs`** | 8 distinct outputs from 10 identical greedy requests; CUDA 1 | `92d3886` |
 | W18 | Vulkan trace divergence 15/16 -> **5/16**, no token-0 divergence | costs 2.2% prefill / 1.0% decode, interleaved A/B | `92d3886` |
 | W19 | **Pure-C++ single-binary OpenAI server** (`bonsai-server`) | 20/20 smoke gate; policy, reasoning split, streaming, web UI, terminal client | `5e72084` |
+| W20 | **Located the Vulkan 2x gap: load width, not bandwidth** | Vulkan reaches 245-250 GB/s (= CUDA) with wide loads, 180 lane-strided; our GEMV is at 130 | `pending` |
 
 ---
 
@@ -139,6 +140,79 @@ physically present in the tree, and it earned its keep immediately -- on
 the restore after the experiment above, `git checkout` plus a patch that
 failed to apply left the tree half-reverted, and the gate caught it before
 a single number was taken.
+
+### K8. Vulkan needs wide loads where CUDA does not -- the rule did not port
+
+Every Vulkan GEMV in this repo lands at 100-130 GB/s and ggml's own MMVQ at
+93-122, while the CUDA GEMV reaches 241 GB/s at the identical shape. A GEMV
+cannot say why, because it also does arithmetic, so
+`kernels/vulkan/bandwidth.comp` does nothing but read:
+
+| access pattern | GB/s |
+| :-- | --: |
+| scalar uint, lane-strided | 180.0 |
+| uvec4 (128-bit) | 246-250 |
+| 4 consecutive uints per lane | 241-245 |
+| *(CUDA float4, same device)* | *244.7* |
+
+**Vulkan matches CUDA -- but only with wide or per-lane-consecutive loads.**
+The lane-strided 32-bit pattern every GEMV here uses caps at 180.
+
+This directly contradicts K2/v6, where CUDA's explicit `uint4` loads bought
+nothing because the hardware already coalesced the lane-strided form. Same
+device, same access pattern, opposite answer. **A design rule derived on one
+backend is a hypothesis on another, not a finding.**
+
+Two plausible explanations died on the way, and the second is the
+methodological point:
+
+- **Memory type is irrelevant.** Thor is unified and a HOST_COHERENT
+  mapping being uncached was the obvious suspect. DEVICE_LOCAL,
+  DEVICE_LOCAL|HOST_VISIBLE and HOST_VISIBLE|HOST_COHERENT all give 180.0
+  scalar and ~246 wide -- identical to three figures.
+- **The apparent memory-type effect was ordering.** The first case measured
+  in each process reads ~147 instead of 180, even after four warm-up
+  dispatches. Reversing the case order moves the low number to whatever now
+  runs first. Read as printed, the table would have "shown" HOST_COHERENT
+  25% slower than DEVICE_LOCAL. **When a table has a suspiciously tidy
+  first-row effect, reverse the order before believing it** -- it costs one
+  run, and it is the same class of error as L4 (measuring while a build
+  ran) and the interleaving lesson from W15.
+
+And a hypothesis that did NOT survive: restructuring the GEMV so each lane
+reads four consecutive words should capture the difference. It does not --
+130.3 GB/s lane-strided vs 105.0 interleaved and 110.2 with the four loads
+grouped back-to-back. Both WIDE4 variants are numerically correct and both
+are slower. So the headroom is proven to exist and the obvious way of
+reaching it fails; likely suspects (untested) are register pressure from the
+staging array and the interleaving of several weight streams.
+
+Worth stating plainly what this leaves: **+38% is available on the Vulkan
+GEMV without changing the access pattern at all** (130 -> 180, the
+lane-strided ceiling), and +88% if the wide path can be made to work. That
+is the largest remaining lever on this backend and it is now a well-posed
+problem instead of a suspicion.
+
+### K9. Decode is not dispatch-bound, which killed the plan for this session
+
+The session opened intending to attack per-dispatch overhead, on the strength
+of a perf-logger reading that showed ~90 ms of GPU op time against a ~1.5 s
+run -- apparently 6% GPU utilisation.
+
+**That reading was wrong.** The logger flushes periodically; 90 ms was one
+flush, not the run. Summed properly it is 2300 ms across 33 flushes, one
+flush per token, ~67 ms of op time against 64-71 ms of wall clock. The GPU
+is essentially saturated.
+
+The independent check agrees: disabling ggml's fusion increases the dispatch
+count and costs only **1.0%** (15.68 -> 15.53 tok/s); disabling multi-add
+costs nothing. If dispatch overhead dominated, removing fusion would hurt
+far more.
+
+So the plan inverted before any code was written, which is the cheapest
+possible time for that to happen. The lesson is narrow and practical: **a
+profiler's summary line is a datum, not a total** -- check whether it is
+cumulative or per-flush before dividing by anything.
 
 ### K7. When a win underdelivers, probe the cost -- do not theorise it
 

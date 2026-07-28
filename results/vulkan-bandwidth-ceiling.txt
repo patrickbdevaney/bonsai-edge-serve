@@ -1,0 +1,107 @@
+Why Vulkan decode is half of CUDA: load width, not bandwidth
+============================================================
+
+The Vulkan backend now matches CUDA end to end (15.74 vs 16.77 tok/s
+ternary, 19.57 vs 19.03 1-bit) but every Vulkan GEMV we have ever measured
+sits at 100-130 GB/s while the CUDA GEMV reaches 241 GB/s at the identical
+shape. This file establishes why, and how much is actually available.
+
+WHAT THE DECODE PROFILE SAYS
+-----------------------------
+`GGML_VK_PERF_LOGGER=1` over a real 32-token generation, median per-shape:
+
+  m        k       MiB     us      GB/s
+  248320   5120    303.1   2613.3  121.6     <- output head
+  5120     17408    21.2    183.7  121.3
+  17408    5120     21.2    193.3  115.3
+  12288    5120     15.0    137.6  114.3
+  10240    5120     12.5    115.2  113.8
+  5120     6144      7.5     81.3   96.7
+  6144     5120      7.5     83.9   93.8
+  1024     5120      1.2     18.7   69.9
+  48       5120      0.1      6.4    9.7
+
+Every real Bonsai shape lands at 93-122 GB/s. The GPU is close to fully
+occupied while this happens -- one flush of the perf logger corresponds to
+one token, ~67 ms of op time against ~64-71 ms of wall clock -- so decode is
+NOT dispatch-bound. Confirming that separately: disabling ggml's fusion
+(which increases the dispatch count) costs only 1.0%, and disabling
+multi-add costs nothing:
+
+  default      15.68 / 15.70 tok/s
+  no-fusion    15.53 / 15.55
+  no-multiadd  15.71 / 15.71
+  no-both      15.55 / 15.56
+
+So the kernels themselves are the limit, at roughly half of what the
+hardware can read.
+
+THE CONTROL THAT WAS MISSING
+-----------------------------
+A GEMV cannot distinguish "kernel leaves 2x on the table" from "Vulkan
+cannot go faster here", because it also does arithmetic. So:
+`kernels/vulkan/bandwidth.comp` does nothing but read -- one add per loaded
+word, no unpacking, no dot product.
+
+  access pattern                        GB/s
+  scalar uint, lane-strided             180.0
+  uvec4 (128-bit)                       246 - 250
+  4 consecutive uints per lane          241 - 245
+
+  for reference, CUDA on this device:   244.7 (float4 streaming read)
+
+**Vulkan reaches the same ~245-250 GB/s as CUDA -- but only with wide or
+per-lane-consecutive loads.** The lane-strided 32-bit pattern, which is what
+every GEMV here uses, caps at 180.
+
+Two things this rules out, both worth recording because both were plausible:
+
+* **Memory type is irrelevant.** Thor is unified, and the obvious suspicion
+  was that a HOST_COHERENT mapping is uncached and slow to read. It is not:
+  DEVICE_LOCAL, DEVICE_LOCAL|HOST_VISIBLE and HOST_VISIBLE|HOST_COHERENT all
+  give 180.0 scalar and ~246 wide, identical to three significant figures.
+
+* **The apparent memory-type effect was an ordering artifact.** The first
+  case measured in each process reads ~147 GB/s instead of 180, even after
+  four warm-up dispatches. Reversing the case order (`BONSAI_BW_REVERSE=1`)
+  moves the low number to whichever case now runs first. Had the table been
+  read as-printed it would have "shown" that HOST_COHERENT is 25% slower
+  than DEVICE_LOCAL, which is false. One reversed run costs nothing and
+  settles it.
+
+AND A HYPOTHESIS THAT DID NOT SURVIVE CONTACT
+----------------------------------------------
+If wide loads are worth 245 vs 180, restructuring the GEMV so each lane
+reads four consecutive words should capture it. It does not:
+
+  q2 int-dot GGUF-order (lane-strided)   130.3 GB/s
+  q2 GGUF-order WIDE4, loads interleaved 105.0 GB/s
+  q2 GGUF-order WIDE4, loads grouped     110.2 GB/s
+
+Both WIDE4 variants are numerically correct (1.49e-05 against the CPU
+reference) and both are SLOWER. Grouping the four loads back-to-back before
+consuming any of them -- which is what the probe does -- recovers 5 points
+and still loses to the original by 15%.
+
+So the headroom is real and proven to exist, and the naive way of reaching
+it does not work. Likely suspects, none tested: register pressure from the
+ROWS x 4 staging array cutting occupancy; the interleaving of ROWS
+independent weight streams; the activation and scale loads breaking up the
+merge window.
+
+WHERE THIS LEAVES THE NUMBERS
+------------------------------
+  Vulkan ceiling, wide loads          ~245 GB/s
+  Vulkan ceiling, lane-strided scalar  180 GB/s
+  our Vulkan GEMV (best)               130 GB/s   72% of scalar ceiling
+  ggml Vulkan MMVQ, real shapes      93-122 GB/s  52-68% of scalar ceiling
+
+There is **+38% available without changing the access pattern at all** --
+just closing the gap to the lane-strided ceiling -- and **+88% if the wide
+path can be made to work**. That is the largest single lever left on this
+backend, and it is now a well-posed problem rather than a suspicion.
+
+Contrast with CUDA, where v6's explicit `uint4` loads bought nothing because
+the hardware already coalesced the lane-strided form (WIKI K2). **That rule
+does not port to Vulkan**: here the two patterns differ by 36%. A design
+rule derived on one backend is a hypothesis on another.
