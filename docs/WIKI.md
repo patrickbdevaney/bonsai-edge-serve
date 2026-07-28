@@ -43,9 +43,9 @@ hardware backs it. Everything else lives under Open Questions.
 | W24 | **State checkpoints make multi-turn prefix reuse work on a hybrid model** | TTFT 1.557s -> 0.360s (4.3x), restored output character-identical to a fresh prefill | `189e1eb` |
 | W25 | Closed the last 5 Vulkan divergences: near-ties, not errors | gaps 0.002-0.065 nats; CPU flips the same 2 prompts at the same tokens | `389f5db` |
 | W26 | **Wide loads shipped in ggml MMVQ: Vulkan now ties/beats CUDA** | Q2_0 15.76 -> 16.75 (CUDA 16.77), Q1_0 19.03 -> 20.27 (CUDA 19.03) | `70be7e3` |
-| W27 | **DSpark runs in-process in `bonsai-server`** | code 1.74x/1.80x, prose 1.49x/1.60x (ternary/1-bit); greedy identical to AR on 14/20 | pending |
-| W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | pending |
-| W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | pending |
+| W27 | **DSpark runs in-process in `bonsai-server`** | code 1.74x/1.80x, prose 1.49x/1.60x (ternary/1-bit); greedy identical to AR on 14/20 | `a7c5491` |
+| W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
+| W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
 
 ---
 
