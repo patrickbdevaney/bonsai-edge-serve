@@ -47,7 +47,7 @@ hardware backs it. Everything else lives under Open Questions.
 | W28 | **A cost model that predicts the losing case** | round costs 2.18 AR-steps, flat across a 2.3x speedup range and both quantisations -> breakeven alpha* = 0.296 | `a7c5491` |
 | W29 | Turned a silent-corruption path into a startup error | `n_rs_seq=0` refuses to boot instead of quietly poisoning GDN state | `a7c5491` |
 | W30 | **Closed the Vulkan MMQ thread as a measured negative** | forced dispatch: scalar int-dot MMQ is 0.36x/0.45x of dequant+coopmat -> correctly stays off on Thor | `f738f35` |
-| W33 | **All three backends' speculation behaviour reduced to one constant each** | R = 2.18 (CUDA) / ~4.9 (CPU) / ~7.3 (Vulkan); Vulkan's breakeven alpha* ~1.57 > 1, so it can never win | pending |
+| W33 | **All three backends' speculation behaviour reduced to one constant each** | R = 2.18 (CUDA) / ~4.9 (CPU) / ~7.3 (Vulkan); Vulkan's breakeven alpha* ~1.57 > 1, so it can never win | `fd7de9e` |
 | W32 | **Q2_0 ARM NEON repack kernels shipped** | CPU-only prefill 4.04 -> 15.76 tok/s (**3.90x**), decode 3.28 -> 5.08 (1.55x); validated vs ggml's own generic, greedy output character-identical | `fe3fdbe` |
 | W31 | **Found every CPU number in this repo was the wrong path** | CUDA host buft outranks repack even at `-ngl 0`; 1-bit CPU decode is 6.80 tok/s, not 4.85 (+40%) | `efff926` |
 
