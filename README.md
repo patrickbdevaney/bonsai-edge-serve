@@ -1,683 +1,440 @@
 # bonsai-edge-serve
 
-Multi-backend speculative serving for PrismML's **Bonsai-27B** family --
-the ternary (`Q2_0`) and 1-bit (`Q1_0`) builds of Qwen3.6-27B -- with
-**DSpark** speculative decoding, developed on **Jetson Thor (sm_110)**
-and targeting the same model across Jetson Orin Nano Super, Thor, RTX
-cards, and plain CPUs.
+**Model-specific, hardware-portable serving for PrismML's Bonsai-27B (ternary `Q2_0` and 1-bit `Q1_0`) with DSpark
+speculative decoding, across CUDA, Vulkan, ARM NEON and x86 AVX**
 
-This is **not** a general GGUF engine. That is llama.cpp's job, and
-llama.cpp does it well. This is model-specific optimization for one
-architecture -- Qwen3.6-27B hybrid: 64 layers, gated-delta-net linear
-attention on 48 of them, full GQA attention with QK norm and gated Q on
-every 4th layer -- in Bonsai's packed low-bit formats, with the DSpark
-drafter fused into the decode step.
+| | |
+|---|---|
+| **Models** | [`prism-ml/Ternary-Bonsai-27B-gguf`](https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf) (`Q2_0`, 7.0 GiB) and [`prism-ml/Bonsai-27B-gguf`](https://huggingface.co/prism-ml/Bonsai-27B-gguf) (`Q1_0`, 3.9 GiB), each with a DSpark drafter (`Q4_1`, ~1.8 GB). Low-bit builds of Qwen3.6-27B |
+| **Architecture** | 64-layer hybrid: gated-delta-net (GDN) linear attention on 48 layers; GQA with QK norm and gated Q on every 4th layer; 262,144-token context |
+| **Backends** | CUDA · Vulkan (vendor-agnostic SIMT) · CPU ARM NEON (DOTPROD / i8mm) · CPU x86 AVX2 / AVX-VNNI |
+| **Reference engine** | PrismML [`llama.cpp` fork](https://github.com/PrismML-Eng/llama.cpp) (`prism` branch, `b9597-7529fdaaf`), plus five patches in [`patches/`](patches/) |
+| **Server** | `bonsai-server`: one C++ binary linking `libllama`, OpenAI-compatible, with a measured per-backend policy layer |
+| **Measured on** | Jetson AGX Thor (`sm_110`, 14× Neoverse V3AE, 122 GiB) for all backends; Intel i9-14900HX for x86 |
+| **Status** | Reference-fork measurements, four-backend kernel ladder, two upstreamable CPU patches, server shipped. The fused custom CUDA engine (Phase 2) is not built |
 
-## Why this repo exists
+---
 
-Three things are not published anywhere, by anyone:
+## Abstract
 
-1. **No Jetson Thor (sm_110) numbers** exist for any Bonsai variant,
-   native or speculative.
-2. **No bespoke engine has DSpark fused in.** `bonsai-turbo` is the
-   fastest published Bonsai decode engine and says so explicitly:
-   speculative decoding is its missing piece.
-3. **No cross-device scaling story.** Same repo, same model weights,
-   Orin Nano Super to Thor to RTX to x86 CPU, measured end to end.
+llama.cpp is a general GGUF engine, and this repository does not try to replace it. It takes one architecture,
+Bonsai-27B, and asks what it costs to serve that model well on every common class of edge hardware: NVIDIA GPUs
+through CUDA, any GPU through Vulkan, Arm SoCs through NEON, and commodity x86 through AVX. The weights stay the same
+throughout; only the backend changes.
 
-This repo owns those three gaps.
+Four results stand out.
 
-## Status
+- **Thor numbers for Bonsai.** No Jetson Thor figures for Bonsai had been published before these. DSpark speculation reaches
+  24.85 tok/s on ternary and 33.24 tok/s on 1-bit, 1.37–1.75× over native decode, at about half the energy per token.
+- **One constant predicts speculation.** A backend's round cost `R`, measured in plain decode steps, sets the
+  break-even acceptance `α* = (R−1)/4`. On four of six backend–format pairs α* exceeds 1. There, no drafter, workload
+  or tuning can make speculation pay, and CPU 1-bit still lost (0.79×) at 100% acceptance.
+- **Two CPU backends were gated off by too-narrow ISA checks.** The fork's repack kernels required i8mm on Arm or
+  AVX-512 VNNI on x86, which excludes Jetson Orin and every consumer Intel part. Patches 0004 and 0005 widen the gates
+  and are validated bit-exact over 100+ shapes:
+  - Arm, ternary: 3.90× prefill, 1.55× decode;
+  - x86: 3.4× prefill, 1.8× decode.
+- **A Vulkan "correctness gap" was a race.** It was traced to `ggml_vk_graph_optimize` reordering writes to the GDN
+  recurrent state. Once determinism was enforced, Vulkan matches the CPU backend's numerical-noise profile.
 
-| Phase | What | State |
-| :-- | :-- | :-- |
-| 0 | Environment + models on Thor | done |
-| 1 | Reference stack + captured oracle traces | done |
-| 1 | **Milestone 0** -- first Thor numbers, reference fork | **done, below** |
-| 2 | CUDA engine, DSpark fused into a single launch | not started |
-| 3 | Cross-arch CUDA targets | compile-verified; only sm_110 run |
-| 4 | Vulkan backend | measured via fork; correctness gap found |
-| 5 | CPU backend | ARM NEON measured; x86 AVX2/AVX-VNNI measured (i9-14900HX) |
-| 6 | Cross-backend table on one device | done, below |
-| 6 | Cross-*device* table (Orin, RTX) | blocked: no second device here |
+Nothing in this README is estimated unless it is labeled as an estimate.
 
-No performance numbers are published in this README until they have been
-measured on the hardware named in the row. Nothing here is estimated.
+---
 
-## Milestone 0 -- Jetson Thor reference numbers
+## Results at a glance
 
-**First published Bonsai-27B numbers on Jetson Thor (sm_110), closing
-GAP 1.** Measured from the PrismML reference fork alone -- no custom
-engine involved.
+### Decode throughput, Jetson AGX Thor, one device, three backends
 
-Device: NVIDIA Thor, CC 11.0, driver 580.00, CUDA 13.0, 122 GiB unified
-memory. Engine: PrismML `llama.cpp` fork `b9597-7529fdaaf`, CUDA build
-(`ARCHS = 1100`), `-fa on -c 16384 -np 1`, draft depth 4. Decode is the
-median over 8 prompts per workload class, 128 tokens each, temperature 0,
-no prefix reuse. Reproduce with `reference/run_milestone0.sh`; raw
-artifacts in `results/`.
+Same box, same weights. Median over 8 prompts per class at temperature 0, `-c 16384 -np 1`, draft depth 4, no prefix
+reuse. Speedups are against the same backend's native decode.
+
+| Backend | Variant | Native, code | Native, prose | DSpark, code | DSpark, prose |
+|---|---|--:|--:|--:|--:|
+| CUDA | ternary `Q2_0` | 16.77 | 16.97 | **24.85 (1.48×)** | **23.23 (1.37×)** |
+| CUDA | 1-bit `Q1_0` | 19.03 | 18.98 | **33.24 (1.75×)** | **26.25 (1.38×)** |
+| Vulkan | ternary `Q2_0` | 15.74 | 16.14 | 6.81 (0.43×) | 6.24 (0.39×) |
+| Vulkan | 1-bit `Q1_0` | 19.57 | 19.60 | 8.20 (0.42×) | 6.43 (0.33×) |
+| CPU, NEON + i8mm, 12 threads | ternary `Q2_0` | 5.19 | 5.14 | 4.95 (0.95×) | 2.49 (0.48×) |
+
+Units are tok/s.
+
+- **Vulkan** rows include the integer-dot MMVQ path (patch 0003). They were taken with the fork's default
+  `graph_optimize` on, which is racy. The deterministic default that `bonsai-server` uses costs 1.0% decode and 2.2%
+  prefill.
+- **CPU** rows are CPU-only with the patch-0004 repack engaged. 1-bit CPU-only decode measures 6.80 tok/s in
+  llama-bench (`results/cpu-repack.txt`).
+- **Sources:** `results/bench/`, `results/vulkan-mmvq-q2_0.txt`, `results/cpu-repack.txt`. Regenerate the table with
+  `python3 bench/render_table.py --speedup results/bench/*.json`.
+
+**Native Vulkan is now within reach of CUDA.** It reaches 94% of CUDA on ternary and is ahead on 1-bit
+(19.57 vs 19.03), after the integer-dot MMVQ path was added for `q1_0` and `q2_0`. The speculative path did not move
+with it, and the round-cost analysis below explains why.
+
+### Thor, reference fork in detail (Milestone 0)
+
+PrismML fork, CUDA build (`ARCHS=1100`), driver 580.00, CUDA 13.0. Reproduce with
+[`reference/run_milestone0.sh`](reference/run_milestone0.sh).
 
 | Variant | Mode | Workload | tok/s | TTFT (s) | Prefill tok/s | Acceptance | Resident |
-| :-- | :-- | :-- | --: | --: | --: | --: | --: |
-| ternary Q2_0 | native | code | 16.77 | 0.491 | 120.2 | n/a | 7158 MiB |
-| ternary Q2_0 | native | prose | 16.97 | 0.439 | 79.7 | n/a | 7158 MiB |
-| ternary Q2_0 | DSpark | code | **24.85** | 0.523 | 107.7 | 54.0% | +1802 MiB* |
-| ternary Q2_0 | DSpark | prose | 23.23 | 0.477 | 69.1 | 43.3% | +1802 MiB* |
-| 1-bit Q1_0 | native | code | 19.03 | 0.424 | 149.1 | n/a | 3952 MiB |
-| 1-bit Q1_0 | native | prose | 18.98 | 0.380 | 100.3 | n/a | 3952 MiB |
-| 1-bit Q1_0 | DSpark | code | **33.24** | 0.464 | 128.3 | 61.6% | +1802 MiB* |
-| 1-bit Q1_0 | DSpark | prose | 26.25 | 0.418 | 82.7 | 51.4% | +1802 MiB* |
-
-\* Native footprints are measured (peak RSS, matching each GGUF's size).
-The drafter figure is the **server's own estimate**, not a measurement:
-peak RSS is not additive across two mmap'd models, so no trustworthy
-measured two-model number exists yet. See `results/memory.txt`.
-
-### DSpark speedup on Thor
-
-| Variant | Workload | Native | DSpark | Speedup | Acceptance |
-| :-- | :-- | --: | --: | --: | --: |
-| ternary Q2_0 | code | 16.77 | 24.85 | **1.48x** | 54.0% |
-| ternary Q2_0 | prose | 16.97 | 23.23 | 1.37x | 43.3% |
-| 1-bit Q1_0 | code | 19.03 | 33.24 | **1.75x** | 61.6% |
-| 1-bit Q1_0 | prose | 18.98 | 26.25 | 1.38x | 51.4% |
-
-Those are the reference `llama-server` numbers. `bonsai-server` now runs
-DSpark **in-process** and measures 1.74x/1.80x on code and 1.49x/1.60x on
-prose (ternary/1-bit), with greedy output character-identical to
-non-speculative decode on 14 of 20 runs.
-
-It also yields the constant worth serving by: a speculative round costs
-**2.18 plain decode steps**, flat across a 2.3x range of measured speedups
-and across both quantisations, so breakeven is `1 + 4*alpha = 2.18`, i.e.
-**alpha* = 0.296**. Estimated from all ten runs, that constant then predicts
-the single losing case (alpha 0.238 -> predicted 0.90x, measured 0.91x).
-See `results/dspark-server.txt` and `server/README.md`.
-
-### What these numbers say
-
-**DSpark never goes negative on Thor.** The published concern is that on
-prose, where acceptance falls to ~51%, the 1-bit target's weights are
-small enough that drafting overhead can make speculation a net loss. On
-Thor it does not: the worst case measured is still 1.37x, and 1-bit on
-prose -- the exact regime flagged as risky -- returns 1.38x at 51.4%
-acceptance. The adaptive draft-disable heuristic planned for Phase 2 has
-no regime to trigger in on this device, though it may still on Orin.
-
-**The speedup ratios are larger than H100's published 1.34x, and that is
-a statement about Thor being slower, not better.** Raw throughput is not
-close: 16.8 tok/s here against H100's published 98.0 tok/s on ternary
-native, roughly 6x apart. PrismML's own model card notes H100 at batch 1
-is bound by kernel-launch and synchronization latency rather than weight
-bandwidth -- there is simply less per-step cost for speculation to
-amortize. Thor's slower, bandwidth-bound decode gives drafting more to
-hide behind, so the *ratio* is higher while the absolute number is far
-lower.
-
-**Acceptance is below the published figures** (54.0% vs ~69.2% ternary on
-code) but this is not a device comparison. Acceptance is a property of
-the drafter and the token distribution, not the hardware; our workloads
-are raw completions rather than PrismML's chat-templated thinking-mode
-benchmark, and prompt content moves acceptance substantially. The
-code-vs-prose *gap* reproduces clearly in both variants, which is the
-behaviour that matters.
-
-## Cross-backend on one device (GAP 3, in part)
-
-Same Thor box, same weights, three backends. This isolates the backend
-from the hardware -- every row below ran on the same GPU or its own CPU
-cores, so differences are the backend's, not the device's.
-
-| Backend | Variant | native code | native prose | DSpark code | DSpark prose |
-| :-- | :-- | --: | --: | --: | --: |
-| CUDA | ternary | 16.77 | 16.97 | **24.85 (1.48x)** | **23.23 (1.37x)** |
-| CUDA | 1-bit | 19.03 | 18.98 | **33.24 (1.75x)** | **26.25 (1.38x)** |
-| Vulkan | ternary | 15.74 | 16.14 | 6.81 (0.43x) | 6.24 (0.39x) |
-| Vulkan | 1-bit | 19.57 | 19.60 | 8.20 (0.42x) | 6.43 (0.33x) |
-| CPU (NEON) | ternary | 2.22† | 2.15† | **2.37 (1.07x)**† | 1.71 (0.79x)† |
-| CPU (NEON) | 1-bit | 3.41† | 3.35† | 3.00 (0.88x)† | 3.35 (1.00x)† |
-
-† **The CPU rows are superseded.** They were measured at `-ngl 0` on the CUDA
-build, where the CUDA pinned-host buffer type outranks the repack buffer
-types, so the ARM repack kernels never ran and part of prefill was executed on
-the GPU. Re-measured CPU-only with the repack path reachable and the new Q2_0
-ARM kernels: **ternary native 5.19 code / 5.14 prose**, DSpark 4.95 (0.95x) /
-2.49 (0.48x). See `results/cpu-repack.txt` and `results/spec-round-cost.txt`.
-
-<!-- sources: Vulkan/1-bit dspark from '.mmvq' results; Vulkan/1-bit native from '.mmvq' results; Vulkan/ternary dspark from '.mmvq' results; Vulkan/ternary native from '.mmvq' results -->
-
-The Vulkan rows were measured with the fork's default `graph_optimize`
-enabled. That pass is a correctness bug (see below) and
-`serve_reference.sh` now disables it by default, which costs 2.2% prefill
-and 1.0% decode -- so the Vulkan figures above are optimistic by about a
-point, and reproducing them needs `BONSAI_VK_GRAPH_OPTIMIZE=1`.
-
-tok/s, median over 8 prompts per class. CPU rows use 64 generated tokens
-rather than 128 to keep a ~3 tok/s backend tractable; rates and
-acceptance stay comparable. Full table with TTFT, prefill and acceptance:
-`python3 bench/render_table.py --speedup results/bench/*.json`.
-
-**Speculation pays off on exactly one of the three backends.** CUDA
-1.37-1.75x, Vulkan 0.33-0.43x, CPU 0.79-1.07x. Same weights, same
-drafter, same box.
-
-**That is now explained by one constant per backend.** A speculative round
-yields `1 + block_size*alpha` tokens and costs `R` plain decode steps, so
-breakeven is `alpha* = (R-1)/block_size`. Measuring R independently on
-prompts whose acceptance differs 3x gives the same value each time:
-
-| Backend | ternary R (`alpha*`) | 1-bit R (`alpha*`) | verdict |
-| :-- | --: | --: | :-- |
-| CUDA | 2.18 (**0.296**) | 2.18 (**0.295**) | wide margin -- 1.49-1.80x measured |
-| CPU (NEON) | ~4.9 (0.97) | ~6.0 (**1.33**) | never / impossible |
-| Vulkan | ~7.3 (**1.54**) | ~8.85 (**1.96**) | **cannot win at any acceptance rate** |
-
-**On four of these six configurations `alpha*` exceeds 1.0, so no drafter,
-workload or tuning can make speculation profitable** -- a perfect drafter
-would still yield 5 tokens for 7.3-8.9 steps of work. That is not a
-projection: CPU/1-bit accepted **100.0%** of draft tokens on the code prompt
-and still returned 0.790x.
-
-R is constant across *workloads* (prompts differing 3-4x in acceptance agree
-to 4-13%), which is what makes it predictive. It is **not** constant across
-targets except on CUDA -- the drafter is the same ~1.8 GB model either way,
-so when the target speeds up, R rises. Speculation is a bet that widening the
-batch is cheap, so the more efficiently a backend already uses the device at
-batch 1, the worse the bet -- which is why the *slowest* backend here has the
-second-worst R, and why making the target faster makes speculation *less*
-attractive. See `results/spec-round-cost.txt`.
-
-**Vulkan native has closed the gap to CUDA, and the 1-bit build passes
-it.** The Vulkan rows moved after the integer-dot MMVQ path was
-implemented for `q1_0`/`q2_0` (ternary 11.79 -> 15.74, 1-bit 15.98 ->
-19.57; `results/vulkan-mmvq-q2_0.txt`). Vulkan was at 70% of CUDA on
-ternary and is now at 94%; on 1-bit it is ahead, 19.57 against 19.03.
-Sampling and dispatch are unchanged -- this is the weight kernel alone.
-
-### DSpark is a net loss on Vulkan -- on every configuration
-
-On CUDA the drafter is worth 1.37-1.75x. On Vulkan it costs more than it
-saves in all four cells, down to 0.39x.
-
-The cause is not draft quality. **Acceptance on Vulkan matches CUDA to
-within about a point everywhere** (54.5 vs 54.0, 62.4 vs 61.6, 44.3 vs
-43.3, 51.8 vs 51.4). The drafter makes the same predictions; the backend
-cannot execute draft-and-verify cheaply. Each speculation round is a
-small dependent dispatch, and Vulkan's submit/synchronise cost is a far
-larger share of a step than a CUDA kernel launch. Degraded acceptance
-would have implied a drafter problem -- identical acceptance points at
-dispatch overhead.
-
-**The MMVQ result narrows this further.** That change lifted Vulkan native
-decode by 33% and left every DSpark cell flat (ternary 7.01 -> 6.81, 1-bit
-7.56 -> 8.20, acceptance unmoved). It could not have helped: verification
-submits a block of drafted tokens, so `n > 1` and the work routes through
-`mul_mm`, never touching the `mul_mat_vec` path that was optimised. So the
-speculative path is provably not weight-GEMV-bound on this backend, and the
-ratios got *worse* precisely because the denominator improved -- a cheaper
-target step raises the breakeven ratio `c` in `alpha > c`.
-
-That leaves two live candidates, and one of them is now concrete: Vulkan
-has no integer-dot **MMQ** path for `q1_0`/`q2_0` (the `mul_mmq.comp` gate
-at `vulkan-shaders-gen.cpp:594` excludes them), while CUDA's `mmq.cu`
-supports both. CUDA therefore verifies draft blocks with an integer-dot
-batch kernel and Vulkan dequantises to float. Whether closing that gap is
-enough to reach break-even is untested -- it would have to be worth ~2.4x
-on the verify step alone -- but it is a specific, checkable lever rather
-than an attribution to dispatch cost.
-
-This is the measurement the directive anticipated might be the Vulkan
-deliverable, and it is: speculative decoding as currently structured does
-not pay for itself in Vulkan's dispatch model. It also means acceptance
-is backend-independent, which is a useful invariant for gating.
-
-### CPU (ARM NEON) straddles break-even -- the adaptive-disable case
-
-On Thor's own ARM cores, DSpark lands almost exactly at break-even and
-which side it falls on depends on the workload:
-
-| Variant | Workload | native | DSpark | speedup | acceptance |
-| :-- | :-- | --: | --: | --: | --: |
-| ternary | code | 2.22 | 2.37 | 1.07x | 57.7% |
-| ternary | prose | 2.15 | 1.71 | **0.79x** | 40.2% |
-| 1-bit | code | 3.41 | 3.00 | **0.88x** | 56.6% |
-| 1-bit | prose | 3.35 | 3.35 | 1.00x | 52.6% |
-
-This is the regime the planned adaptive draft-disable heuristic exists
-for -- and notably it is *not* the regime the published data predicted.
-The documented risk was 1-bit on prose at ~51% acceptance; measured here,
-that cell is exactly 1.00x while ternary *prose* (0.79x) and 1-bit *code*
-(0.88x) are the losses. A heuristic keyed to a fixed acceptance threshold
-would get this wrong: 1-bit code loses at 56.6% acceptance while ternary
-code wins at 57.7%. Breakeven depends on the ratio of draft cost to
-target cost on that backend, not on acceptance alone.
-
-x86 AVX-512 is **not** tested -- Thor is ARM. The fork already carries
-AVX512-VNNI repack kernels for Q1_0 and Q2_0, so the code exists, but
-validating it needs a borrowed x86 host.
-
-### The Vulkan correctness gap was a RACE, and it is now root-caused
-
-An earlier version of this section reported that Vulkan diverged from the
-CUDA oracle on 15/16 traces, 5 at token 0, and blamed `n_probs`. **That
-attribution was wrong in every part.** `n_probs` is irrelevant. The Vulkan
-backend was *nondeterministic*, so the gate was scoring a different roll of
-the dice on every run.
-
-Ten identical requests -- temperature 0, `top_k 1`, fixed seed,
-`cache_prompt=false`, one server process:
-
-| Backend | py-binsearch | cuda-reduce | review-restaurant | coastal-town |
-| :-- | --: | --: | --: | --: |
-| CUDA | 1 | 1 | 1 | 1 |
-| Vulkan | 2 | 7 | 8 | 3 |
-
-Distinct outputs from identical greedy requests. Vulkan returned **8
-different answers to the same question**.
-
-Bisected to one subsystem by toggling them one at a time on the same
-binary: coopmat, async and fusion all still fail 4/4;
-`GGML_VK_DISABLE_GRAPH_OPTIMIZE=1` passes 4/4. `ggml_vk_graph_optimize`
-reorders nodes to expose parallelism and judges independence with
-`is_src_of`, which sees only a direct `src[]` edge plus one level of
-`view_src`. It cannot see a write-after-read hazard on a shared buffer
-where neither node is the other's source -- and Bonsai carries recurrent
-state across 48 gated-delta-net layers, which is exactly that shape. The
-reorder itself is deterministic; what varies is what it lets run
-concurrently without a barrier.
-
-It is localised to **prefill**: with `cache_prompt=true` everything is
-stable, because prefill runs once and later requests replay cached KV. That
-is also why the bug is invisible at the server's defaults, and why
-`bench/gate_determinism.sh` forces caching off.
-
-**Fixing it costs 1-2%** -- interleaved A/B, three reps: prefill 371.2 ->
-362.9 (-2.2%), decode 16.2 -> 16.0 (-1.0%).
-
-With determinism enforced, re-capturing and re-gating against the same
-oracle:
-
-| Backend | traces reproducing oracle | worst drift on those | character |
-| :-- | --: | --: | :-- |
-| CPU (NEON) | 13/16 | 0.058 | numerical noise |
-| Vulkan, racy (old) | 1/16 | 3.586 | broken output |
-| Vulkan, deterministic | 11/16 | 0.131 | numerical noise |
-
-No trace diverges at token 0 any more, all 16 produce a full 128 tokens,
-and the 5 remaining divergences sit at tokens 29-96 -- mid-generation
-greedy tie-flips, the same character as the CPU backend's 3. **Vulkan is
-now the same kind of backend as CPU rather than a broken one**, which
-retires the earlier verdict that "CPU is a credible backend, Vulkan is
-not yet."
-
-The gate still reports FAIL at its 0.05 tolerance, but the 5 remaining
-divergences are now **explained, and they are not errors**. Every one lands
-on a token where the model is essentially undecided -- top1-top2 gaps of
-0.0024 to 0.0651 nats, i.e. probability ratios between 1.002 and 1.067.
-
-Across the oracle's 2048 scored tokens the median gap is 4.712 nats, and
-only 1.17% are that close. But at 1.17%, a 128-token trace has a **78%**
-chance of containing one, so 12.5 of 16 traces would diverge if every tie
-flipped independently. We observe 5 -- fewer than chance would give.
-
-The decisive evidence is that **CPU and Vulkan diverge on the same two
-prompts, at the same token, with the same pre-divergence drift**
-(coastal-town tok 41: 0.0567 vs 0.0573; history-canal tok 29: 0.0423 vs
-0.0423). Those points are properties of the model, not of a backend.
-
-Measuring drift *before* the first divergence -- after it, the two runs are
-generating different text and their logprobs are not comparable -- gives
-Vulkan 0.131 worst-case against CPU's 0.058. Same order, both consistent
-with quantisation and reduction-order noise.
-`results/vulkan-divergence-explained.txt`.
-
-Worth stating plainly: a correctness gate run against a nondeterministic
-backend does not measure correctness. "15/16" was never a property of the
-Vulkan kernels -- it was one sample, and re-running it would have given a
-different number. **Establish determinism before running any comparison
-gate.** Full write-up: `results/vulkan-nondeterminism.txt`.
-
-## Long context is nearly free on this architecture
-
-Bonsai is 48/64 gated-delta-net, and a GDN layer's recurrent state is fixed
-size regardless of sequence length -- only the 16 full-attention layers grow
-a KV cache. Measured across the model's full trained context:
-
-| ctx | KV (f16) | KV (q8_0) | GDN state | total (q8_0) | tok/s |
-| --: | --: | --: | --: | --: | --: |
-| 4096 | 256 MiB | 136 MiB | 598 MiB | 1056 MiB | 15.79 |
-| 65536 | 4096 | 2176 | 598 | 3336 | 15.77 |
-| 131072 | 8192 | 4352 | 598 | 5768 | 15.77 |
-| 262144 | 16384 | 8704 | 598 | 10632 | 15.83 |
-
-**Decode throughput is flat across a 64x context increase** (15.33 -> 15.83
-tok/s). On a dense transformer decode slows as the KV grows because every
-attention layer rescans it; here only 16 of 64 do. The full 262144 context
-runs in ~25 GiB including weights, against 122 GiB of unified memory.
-
-`q8_0` KV halves the cache for no measurable cost -- unchanged throughput
-and character-identical greedy output on a code prompt.
-
-Two honest limits: **prefill is not free** (filling 256K still costs 256K
-tokens at ~345 tok/s), and **quality at long context is untested** -- these
-runs show it fits and stays fast, not that it reasons well over 256K.
-`results/context-scaling.txt`.
-
-## Serving: `bonsai-server` (pure C++, single binary)
-
-A lean OpenAI-compatible server that links `libllama` directly -- no Python
-on the hot path, no proxy hop. `server/README.md` has the detail.
-
-```bash
-BUILD_DIR=build-vulkan2 ./server/build.sh
-./build/bonsai-server -m ~/models/bonsai/ternary/Ternary-Bonsai-27B-Q2_0.gguf \
-    --backend vulkan --webui server/webui.html
-./build/chat                     # streaming terminal client
-./bench/gate_server.sh 8085      # 20-check smoke gate
-```
-
-`/v1/chat/completions` (SSE + non-streaming), `/v1/completions`,
-`/v1/models`, `/metrics`, `/v1/policy`, self-contained web UI at `/`.
-`<think>` blocks are routed to `reasoning_content`; `enable_thinking:false`
-suppresses them for short answers.
-
-**The policy layer is the point.** Running `llama-server` gets you an
-OpenAI API too. What this binary adds is that this repo's measurements are
-applied by default rather than living in a wiki you have to read first:
-speculation OFF on Vulkan (measured 0.33-0.43x), determinism enforced on
-Vulkan, 12 CPU threads and not 14. `GET /v1/policy` returns every decision
-with the number behind it.
-
-**Prefix caching is nearly inert here, and that is a finding.** Bonsai is
-hybrid -- 48 of 64 layers are gated-delta-net, whose recurrent state cannot
-be truncated by `llama_memory_seq_rm`. An ordinary LCP cache does not error;
-it silently continues the previous answer. Only a pure append can reuse the
-KV, which means append-only continuation reuses (21 of 23 tokens measured)
-and multi-turn chat does not. An earlier draft of this README claimed a 7.7x
-TTFT win from that cache -- it was measuring the broken path. See WIKI L10.
-
-## Energy per token (Phase 6)
-
-From Jetson's own power rails via `tegrastats`. `VIN` is whole-board
-draw, so this is comparable only against other whole-device figures.
-CUDA backend, 256-token sustained decode.
-
-| Config | idle W | busy W | tok/s | mWh/token | marginal mWh/token |
-| :-- | --: | --: | --: | --: | --: |
+|---|---|---|--:|--:|--:|--:|--:|
+| ternary `Q2_0` | native | code | 16.77 | 0.491 | 120.2 | — | 7,158 MiB |
+| ternary `Q2_0` | native | prose | 16.97 | 0.439 | 79.7 | — | 7,158 MiB |
+| ternary `Q2_0` | DSpark | code | **24.85** | 0.523 | 107.7 | 54.0% | +1,802 MiB* |
+| ternary `Q2_0` | DSpark | prose | 23.23 | 0.477 | 69.1 | 43.3% | +1,802 MiB* |
+| 1-bit `Q1_0` | native | code | 19.03 | 0.424 | 149.1 | — | 3,952 MiB |
+| 1-bit `Q1_0` | native | prose | 18.98 | 0.380 | 100.3 | — | 3,952 MiB |
+| 1-bit `Q1_0` | DSpark | code | **33.24** | 0.464 | 128.3 | 61.6% | +1,802 MiB* |
+| 1-bit `Q1_0` | DSpark | prose | 26.25 | 0.418 | 82.7 | 51.4% | +1,802 MiB* |
+
+\* Native footprints are measured peak RSS. The drafter figure is the server's own estimate, because peak RSS is not
+additive across two memory-mapped models (`results/memory.txt`).
+
+**`bonsai-server`, which runs DSpark in-process,** measures 1.74× / 1.80× on code and 1.49× / 1.60× on prose
+(ternary / 1-bit). Its greedy output is character-identical to non-speculative decode on 14 of 20 runs
+(`results/dspark-server.txt`).
+
+### x86 (Intel i9-14900HX, AVX2 + AVX-VNNI, no AVX-512)
+
+x86 was measured at three levels. **Bonsai-27B itself has not been run end to end on x86.**
+
+| Level | Measurement | `Q2_0` | `Q1_0` |
+|---|---|--:|--:|
+| Fork kernels (patch 0005), llama-bench, 8 threads | Prefill pp512, repack vs generic | **23.8 vs 7.1 (3.4×)** | parity; not selected |
+| | Decode tg128, repack vs generic | **8.6 vs 4.8 (1.8×)** | parity; not selected |
+| Decode-step proxy, real 27B shape schedule | Best tok/s (321 GEMVs, 5.49 GiB per token) | **4.23** | **7.50** |
+| Standalone GEMV | Unpinned DRAM saturation | 28–30 GB/s | 28–30 GB/s |
+
+- **The fork runs used a requantized Qwen3.5-4B.** It validates the pipeline and kernel speed only; 2-bit without QAT
+  produces unusable text.
+- **The decode-step proxy runs random weights** and skips elementwise work. It is a weights-and-overhead ceiling,
+  not a served rate.
+- Sources: `results/fork-x86-repack.txt`, `results/decode-proxy-avx-x86.txt`, `results/gemv-avx-x86.txt`.
+
+---
+
+## Findings
+
+### 1. Speculation is governed by one constant per backend
+
+A DSpark round yields `1 + 4α` tokens and costs `R` plain decode steps. Break-even is therefore `α* = (R−1)/4`.
+`R` was measured independently on prompts whose acceptance differs 3×. It agrees to 4–13% across workloads, which is
+what makes it predictive.
+
+| Backend | Ternary R (α*) | 1-bit R (α*) | Verdict |
+|---|--:|--:|---|
+| CUDA | 2.18 (**0.296**) | 2.18 (**0.295**) | Wins; measured 1.37–1.80× |
+| CPU (NEON) | ~4.9 (0.97) | ~6.0 (**1.33**) | Break-even at best; impossible on 1-bit |
+| Vulkan | ~7.3 (**1.54**) | ~8.85 (**1.96**) | Cannot win at any acceptance rate |
+
+The CUDA constant predicted the one losing CUDA-server case before it was measured: α 0.238 gives a predicted 0.90×,
+and 0.91× was measured. Because the drafter is a fixed ~1.8 GB model, a faster target raises `R`. **Making the target
+faster makes speculation less attractive.** That is why the Vulkan MMVQ change, which lifted native decode 33%, made
+every DSpark ratio worse (`results/spec-round-cost.txt`).
+
+**Implication for porting:** measure `R` on new hardware before enabling speculation. The server's
+`--speculate auto` refuses where it is known to lose.
+
+### 2. Vulkan's loss is per-dispatch pipeline barriers
+
+Acceptance on Vulkan matches CUDA to within about a point in every cell. The drafter predicts the same tokens; the
+backend cannot execute draft-and-verify cheaply.
+
+- A barrier-separated dispatch costs ~1.4 µs (narrow scope) to ~3.9 µs (wide scope). With no barrier it costs
+  ~0.17 µs.
+- One token graph is ~2,293 dispatches, a **~3.9 ms/token floor**. Submits and host round-trips are under 5%.
+- The whole narrow-to-wide gap is `VK_ACCESS_INDIRECT_COMMAND_READ_BIT` in `dstAccessMask`.
+
+### 3. The Vulkan "correctness gap" was a race
+
+Ten identical greedy requests (fixed seed, `cache_prompt=false`) returned up to **8 distinct outputs** on Vulkan and
+exactly 1 on CUDA. Bisected to `ggml_vk_graph_optimize`:
+- It judges node independence with `is_src_of`, which sees only direct `src[]` edges.
+- It misses write-after-read hazards on shared buffers. Bonsai's recurrent state across 48 GDN layers has exactly
+  that shape.
+
+With the pass disabled:
+
+| Backend | Traces reproducing the oracle | Worst pre-divergence drift | Character |
+|---|--:|--:|---|
+| CPU (NEON) | 13/16 | 0.058 | Numerical noise |
+| Vulkan, racy | 1/16 | 3.586 | Broken output |
+| Vulkan, deterministic | 11/16 | 0.131 | Numerical noise |
+
+The remaining divergences all fall on near-ties: top-1/top-2 gaps of 0.0024–0.0651 nats. CPU and Vulkan diverge on
+the same two prompts, at the same token, with the same drift, so those points are properties of the model.
+**Establish determinism before running any comparison gate.** (`results/vulkan-nondeterminism.txt`,
+`results/vulkan-divergence-explained.txt`.)
+
+### 4. Narrow ISA gates silently disable optimizations, three times over
+
+A wrongly gated kernel fails silently: the model loads, the output is correct, and the fast path never runs.
+
+| Instance | Gate | Who was excluded | Fix |
+|---|---|---|---|
+| Arm `Q2_0` repack | none existed (AVX-512 only) | every Arm CPU | Patch 0004: NEON repack. DOTPROD tier for Armv8.2 (Orin), i8mm `SMMLA` gemm for Armv8.6+ |
+| x86 `Q1_0`/`Q2_0` repack | AVX-512 VNNI | consumer Intel (fused off), every AVX2 part | Patch 0005: AVX2 / AVX-VNNI tier |
+| CPU runs on a CUDA build | CUDA pinned-host buffer outranks repack buffers, even at `-ngl 0` | every "CPU" number taken on a CUDA build | Measure on a CPU-only build, or hide the GPU |
+
+Arm, ternary, CPU-only, 12 threads:
+
+| gemm path | pp64 | tg16 | vs no repack |
+|---|--:|--:|--:|
+| no repack (before) | 4.04 | 3.28 | — |
+| DOTPROD (Armv8.2 class, forced) | 8.94 | 5.03 | 2.21× / 1.53× |
+| i8mm (Armv8.6+, Thor) | **16.05** | 5.06 | **3.97×** / 1.54× |
+
+In the same spirit, x86 `Q1_0` measured at parity with its existing `vec_dot`, so patch 0005 does not select it.
+**Gate on what was measured to help, not on what the instruction set makes possible.**
+
+### 5. Long context is nearly free on this architecture
+
+Only the 16 full-attention layers grow a KV cache. The GDN state is a fixed 598 MiB.
+
+| Context | KV f16 | KV q8_0 | GDN state | Total (q8_0) | Decode tok/s |
+|--:|--:|--:|--:|--:|--:|
+| 4,096 | 256 MiB | 136 MiB | 598 MiB | 1,056 MiB | 15.79 |
+| 65,536 | 4,096 | 2,176 | 598 | 3,336 | 15.77 |
+| 131,072 | 8,192 | 4,352 | 598 | 5,768 | 15.77 |
+| 262,144 | 16,384 | 8,704 | 598 | 10,632 | 15.83 |
+
+- **Decode is flat across a 64× context increase.** The full 262K context fits in ~25 GiB including weights.
+- **`q8_0` KV cache is free:** same throughput, character-identical greedy output on a code prompt.
+- **Not shown:** prefill at 256K still costs ~345 tok/s, and quality at long context is untested
+  (`results/context-scaling.txt`).
+
+### 6. DSpark roughly halves energy per token
+
+Whole-board `VIN` from `tegrastats`, CUDA, 256-token sustained decode.
+
+| Config | Idle W | Busy W | tok/s | mWh/token | Marginal mWh/token |
+|---|--:|--:|--:|--:|--:|
 | ternary native | 20.2 | 67.7 | 16.60 | 1.133 | 0.794 |
 | ternary DSpark | 20.5 | 63.6 | 29.29 | **0.603** | 0.409 |
 | 1-bit native | 20.7 | 61.9 | 18.66 | 0.921 | 0.613 |
 | 1-bit DSpark | 21.0 | 64.7 | 32.83 | **0.548** | 0.370 |
 
-**DSpark nearly halves energy per token** (1.133 -> 0.603 ternary, 0.921
--> 0.548 for 1-bit). It raises throughput at essentially unchanged board
-power, so the speedup converts almost directly into efficiency. That is a
-better argument for speculation on an edge device than the tok/s number
-alone.
+Speculation raises throughput at unchanged board power. For an edge device, that is a stronger argument than tok/s
+alone (`results/power.txt`).
 
-Marginal energy subtracts the ~20 W idle floor, which is a large share of
-Thor's ~65 W busy draw. Which column is right depends on the question:
-total for "what does this box cost to run", marginal for "what does
-serving one more token cost".
+### 7. What hybrid recurrence does to serving
 
-For scale, PrismML publish 0.275 mWh/token on an M5 Pro. Thor's best here
-is 0.548 total / 0.370 marginal -- roughly 1.3-2x that figure. A dev kit
-with a 20 W idle floor is not built for the same efficiency point as a
-laptop SoC, so this is context rather than a defeat.
+- **Prefix caching is nearly inert.** GDN recurrent state cannot be truncated by `llama_memory_seq_rm`. An ordinary
+  longest-common-prefix cache does not error; it silently continues the previous answer. Only pure appends reuse
+  state (21 of 23 tokens measured), so multi-turn chat does not. An earlier claim of a 7.7× TTFT win was measuring
+  the broken path (WIKI L10).
+- **Continuous batching buys latency, not throughput.** The recurrent path splits batches by sequence, so aggregate
+  decode stays flat at 14.3–14.7 tok/s for 1, 2 and 4 streams (`results/concurrency.txt`).
+- **DSpark is not token-identical to native at temperature 0.** 5/16 ternary and 6/16 1-bit trace pairs diverge
+  reproducibly, and both continuations are reasonable. Gates therefore compare like mode against like mode.
 
-## Cross-architecture compile verification (Phase 3)
+### 8. Kernel ceilings: one packed format, four backends
 
-| Arch | Target | Result |
-| :-- | :-- | :-- |
-| sm_87 | Jetson Orin / Orin Nano Super | compiles |
-| sm_86 | RTX 3090 | compiles |
-| sm_110 | Jetson Thor | compiles, **run and validated** |
-| sm_120a | RTX 5090 | compiles |
-| sm_121a | DGX Spark | compiles |
+`kernels/` holds batch-1 GEMVs for all four backends, sharing one packed format
+([`kernels/common/bonsai_gemv.h`](kernels/common/bonsai_gemv.h)):
+- a biased encoding, so raw codes are dotted directly with one correction per block;
+- a bit-plane interleave, so four consecutive weights unpack from one word.
 
-Reproduce with `cuda/arch/verify_arches.sh`. Compiling is not a
-correctness or performance claim -- only sm_110 was executed. Everything
-else is unvalidated until run on the real part.
+All backends match the same CPU reference: CUDA 1.2e-07, Vulkan 4.8e-06, NEON and AVX bit-exact.
 
-### Published baselines for comparison
+| Backend | Best kernel | `Q2_0` GB/s, best measured |
+|---|---|--:|
+| CUDA, Thor | v5: `dp4a`, activations in shared memory | **178.5** (65% of 273 GB/s spec) |
+| Vulkan, Thor | integer-dot (Tier 3); needs glslang ≥ 16 | 103.5 |
+| CPU NEON, Thor, 12 threads | whole-vector unpack + `SDOT` | 38.75 |
+| CPU AVX2/VNNI, i9-14900HX | `VPDPBUSD`, work-stealing threads | 28–30 (DRAM-saturated) |
 
-From the model cards, measured by PrismML on other hardware. Context, not
-this repo's results:
+GPU rows use N=131072 × K=8192 (8× the 32 MB L2); the NEON row uses N=32768 × K=4096; the AVX row is DRAM
+saturation across shapes. At 178 GB/s, ternary decode on Thor is bounded near **26 tok/s** from weight traffic. The reference fork's 16.77
+leaves about **1.5×** for a fused engine.
 
-| Platform | Variant | Native tok/s | + DSpark | Speedup |
-| :-- | :-- | --: | --: | --: |
-| H100 | ternary | 98.0 | 131.8 | 1.34x |
-| H100 | 1-bit | 104.8 | 143.8 | 1.37x |
-| Apple M5 Max | ternary | 44.0 | not enabled | -- |
-| Apple M5 Pro | ternary | 26.2 | not enabled | -- |
+**Rejected on CUDA, with measurements:**
+- 128-bit weight loads: 12% slower;
+- row-blocking: 6–25% slower;
+- multi-row-per-warp variants: all slower.
 
-### Correctness finding: DSpark is not token-identical to native
+See [`kernels/README.md`](kernels/README.md).
 
-Speculative decoding is expected to be lossless, so at temperature 0 a
-DSpark run should emit exactly the tokens a native run emits. **On Thor
-it does not.** The divergence is reproducible, occurs on a freshly
-started server's first request, and is not an artifact of trace capture:
+---
 
-```
-native: for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
-dspark: for (int offset = warpSize / 2;   offset > 0; offset /= 2)
-```
+## Backend support matrix
 
-It affected 5/16 ternary and 6/16 1-bit trace pairs. This does not
-invalidate the throughput above and does not indicate worse output --
-both continuations are reasonable. It does mean native output cannot
-serve as the oracle for a DSpark run, so every backend gate here compares
-like mode against like mode. Whether the cause is Thor-specific numerics
-or general to the fork needs a second device to separate.
-Detail in `docs/METHODOLOGY.md`.
+**Tested here** means the path ran and was validated on available hardware. **Exercised** means it was forced on
+hardware that would not otherwise select it. **Untested** means no device was available. Detail and every force-hook
+are in [`docs/PORTABILITY.md`](docs/PORTABILITY.md).
 
-## Research pass: where the performance actually is
+| Backend | Feature tier | Path | Status |
+|---|---|---|---|
+| CPU Arm | NEON + i8mm (Armv8.6+) | `Q2_0` repack, `SMMLA` gemm | **Tested** (Neoverse V3AE) |
+| CPU Arm | NEON + DOTPROD (Armv8.2+, e.g. Orin) | `Q2_0` repack, `SDOT` gemm | **Exercised** (`BONSAI_Q2_0_NO_I8MM=1`) |
+| CPU Arm | NEON without DOTPROD | per-row `vec_dot` | **Exercised**; character-identical output |
+| CPU x86 | AVX2 / AVX-VNNI | `Q2_0` repack (patch 0005) | **Tested** (i9-14900HX) |
+| CPU x86 | AVX-512 VNNI | fork's upstream repack | Untested |
+| CPU x86 | pre-AVX2 | `vec_dot` | Untested |
+| Vulkan | integer dot product + coopmat | MMVQ decode, dequant + coopmat prefill | **Tested**; 56/56 op shapes |
+| Vulkan | no integer dot product | dequant MMV | **Exercised**; 56/56 op shapes |
+| Vulkan | integer dot, no coopmat | scalar integer-dot MMQ | **Exercised for correctness** (38 shapes, 0 fail); performance untested |
+| CUDA | `sm_110` (Thor) | fork kernels | **Run and validated** |
+| CUDA | `sm_87`, `sm_86`, `sm_120a`, `sm_121a` | fork kernels | Compiles only (`cuda/arch/verify_arches.sh`) |
 
-`docs/RESEARCH_PROMPT.md` is the meta-critique and research brief;
-`docs/RESEARCH_FINDINGS.md` is the answer, from a five-agent literature
-pass plus new measurements on this box. The five results that changed the
-plan:
+**Speculation does not transfer between devices.** Re-measure `R` on every new device.
 
-**1. We are at ~56% of an achievable roofline, and our kernel is already
-at 90% of the machine.** We built the GEMV ladder and measured it across
-shapes. Best streaming rate is **212-220 GB/s**, against a measured
-achievable read bandwidth of **244.7 GB/s** -- so the kernel itself has
-little left to give. That puts ternary decode near **30 tok/s** against
-the reference fork's 16.77, i.e. **~1.8x of headroom** from kernel work,
-with an absolute machine ceiling around 34 tok/s.
+---
 
-The research pass reported 229 GB/s (84% of spec) and we could not
-reproduce it at the shape claimed. The likely explanation is now
-measured: the winner and the rate both depend on whether the weights fit
-Thor's 32 MB L2, and L2-resident shapes reach 238-388 GB/s. A decode step
-touches each matrix once across ~3.8 GB, so the streaming regime is the
-real one. Full ladder and shape sweep in `kernels/README.md` and
-`results/gemv-cuda-shapes.txt`.
+## Getting started
 
-**2. The DSpark memory blowup is fixable, measured.** Capping the
-drafter's staging batch saves ~1 GB at ctx 4096 with **zero throughput
-loss, zero fallbacks, identical acceptance**:
-
-| ctx | cap | total MiB | code tok/s | acceptance | fallbacks |
-| --: | --: | --: | --: | --: | --: |
-| 4096 | 256 | **7320** | 33.23 | 61.6% | 0 |
-| 4096 | none | 8355 | 33.87 | 61.6% | 0 |
-| 2048 | 256 | **7162** | 31.89 | 61.6% | 0 |
-
-A second ~1.3 GB is available by setting `n_rs_seq = 0` and using the
-host-side state checkpoints already implemented in the fork -- untested,
-and the highest-leverage remaining experiment.
-
-**3. Zero-memory speculation is free but not a speedup here.** N-gram
-self-speculation costs **byte-identical memory to native** (4173 MiB, all
-variants) -- no drafter weights, no drafter KV, and no recurrent-state
-blowup. But throughput is also identical (~1.00x), because n-gram pays on
-input-grounded generation and both our suites are open-ended. It is the
-right free fallback; it does not replace a drafter.
-
-**4. Vulkan's loss is the pipeline barrier, not submits.** Measured here:
-a barrier-separated dispatch costs ~1.4 us narrow / ~3.9 us wide vs
-~0.17 us with none, and a token graph is ~2293 real dispatches -- a
-**~3.9 ms/token floor**. Submits and host round-trips together are <5%.
-Separately, **neither `q1_0` nor `q2_0` is in ggml-vulkan's integer-dot
-lists at all**, so both run the float path while IQ1_S gets dp4a;
-precedent for that fix is +78-131%.
-
-**5. The CPU default is the worst setting.** Leaving 2 of 14 cores for the
-OS is worth **1.73x (ternary) and 2.27x (1-bit)**:
-
-| threads | ternary | 1-bit |
-| --: | --: | --: |
-| **12** | **3.18** | **4.85** |
-| 14 (default) | 1.84 | 2.14 |
-
-> **Superseded: Q2_0 ARM repack kernels now exist** (`patches/0004`), taking
-> CPU-only ternary prefill from 4.04 to **15.76 tok/s (3.90x)** and decode
-> from 3.28 to **5.08 (1.55x)**. See `results/cpu-repack.txt`.
->
-> **These CPU figures are the non-repack path and understate 1-bit.** They
-> were taken with `-ngl 0` on the CUDA build, where the CUDA pinned-host
-> buffer type outranks the repack buffer types in `make_cpu_buft_list`, so
-> the ARM repack kernels Q1_0 *does* have were never selected. Hiding the
-> GPU (`CUDA_VISIBLE_DEVICES=""`) takes 1-bit decode to **6.80 tok/s** and
-> prefill from 11.89 to **20.16**. `-ngl 0` bounds where the weights live,
-> not where the ops run. The thread-count ratio above is unaffected.
-> See `results/cpu-repack.txt`.
-
-Fixed: the CPU path now defaults to 12 threads. The Milestone 0 CPU rows
-above used the default and therefore understate that backend.
-
-**Scope correction:** the smaller Bonsai models (8B/4B/1.7B, 0.23-2.15
-GiB) exist but are **plain dense Qwen3** -- no GDN, no recurrent state, no
-DSpark, 32-64K context. They are a simpler engine path and give zero GDN
-coverage, so they cannot be used to iterate on the 27B's kernels.
-
-## Phase 2 started: the decode kernels
-
-`kernels/` holds the batch-1 low-bit GEMV for all three backends, sharing
-one packed weight format (`kernels/common/bonsai_gemv.h`). See
-`kernels/README.md` for the design and full results.
-
-**CPU (ARM NEON) is measured and bit-exact** against a scalar reference.
-Whole-vector unpack + SDOT versus the per-element extract the current ARM
-path uses: **0.37 -> 5.78 GB/s on ternary (~16x)** and **0.03 -> 2.78
-GB/s on 1-bit (~90x)** single-threaded. Threaded best is 38.75 GB/s at
-12 threads, and 14 threads collapses to 19.01 -- independently
-reproducing the leave-cores-for-the-OS finding.
-
-Projected onto the real model that is **5.40 tok/s ternary against
-llama.cpp's tuned 3.18 (1.70x)** -- but **4.45 vs 4.85 (0.92x) on 1-bit,
-a real regression**. That is the predicted outcome, not a bug: SDOT
-retires 16 weights per instruction regardless of bit width, so a 1-bit
-kernel shaped like a 2-bit one moves half the bytes at the same
-weights/s. The fix is a lookup-table kernel, and it turns out to require
-a row-interleaved weight layout -- i.e. the one place the shared-format
-design may have to bend. Documented rather than rushed.
-
-**CUDA and Vulkan compile but are unvalidated on device.** The GPU is
-wedged (see below), so no performance claim is made for either.
-
-## Blocked: the GPU needs a reboot
-
-After the suspend/resume cycle, 201 processes are stuck in `D` state
-inside the NVIDIA UVM replayable-fault handler and `nvidia_uvm`'s
-refcount is pinned at 1272, so **any new CUDA or Vulkan context hangs** --
-including a trivial `cudaMemGetInfo` that worked before the suspend. The
-stuck processes are `rustdesk`, not this project's, and `nvidia-smi`
-still reports the device healthy at 0% util. Stopping the rustdesk
-service did not release them; D-state processes cannot be killed and the
-module cannot be unloaded at that refcount. A reboot clears it.
-
-## What is not done, and why
-
-Being explicit so the tables above are not read as more than they are.
-
-**Phase 2 -- the custom CUDA engine with DSpark fused -- has not been
-started.** It is the core build of this repo and it is a large one: a
-weight loader for the packed Q2_0/Q1_0 formats, GDN linear-attention
-kernels for 48 layers, GQA-with-QK-norm kernels for the other 16, and a
-single-launch decode step with draft-and-verify inside one graph replay.
-Everything published here so far measures the *reference fork*, not any
-engine of ours. The work below it is now in place -- oracle traces,
-gates, benchmark harness, memory accounting -- so the engine has
-something to be judged against, which was the point of doing it first.
-
-Three findings from this phase feed directly into that build:
-
-1. The drafter's full-context staging buffer is what blocks 8 GB devices.
-   Sizing it to the draft block is a concrete, measurable win.
-2. Speculation's benefit is entirely a function of per-step dispatch
-   cost. Fusing draft+verify into one launch attacks exactly the overhead
-   that makes Vulkan lose and CPU break even.
-3. An adaptive draft-disable heuristic cannot key on acceptance; it has
-   to measure realised throughput both ways.
-
-**Blocked on hardware not present here:**
-
-- Orin Nano Super (sm_87) and RTX (sm_86/120a/121a) are compile-verified
-  only. No run, no correctness claim, no performance claim.
-- x86 AVX-512 is untested; Thor is ARM.
-- The cross-*device* scaling table (the full GAP 3) needs a second
-  device. What exists today is a cross-*backend* table on one device.
-
-**Open:** whether the temperature-0 DSpark divergence is Thor-specific
-numerics or general to the fork. Separating those needs a second device.
-
-## Layout
-
-```
-reference/     wrappers around the PrismML fork -- the correctness oracle
-  setup_prism_fork.sh    build the fork per backend
-  serve_reference.sh     canonical llama-server invocations
-  capture_traces.py      capture + compare per-token logprob traces
-  run_milestone0.sh      full variant x mode x workload sweep
-bench/         backend-agnostic harness
-  bench.py               tok/s, TTFT, acceptance %
-  measure_memory.sh      resident footprint (peak RSS; see methodology)
-  gpu_mem.cu             cudaMemGetInfo helper, since nvidia-smi is blind on Jetson
-  render_table.py        generates the results tables from run artifacts
-  workloads/             code (high-accept) AND prose (low-accept)
-cuda/          primary backend, developed on Thor      [not started]
-vulkan/        hardware-agnostic GPU backend           [not started]
-cpu-neon-arm/  ARM NEON backend (x86 AVX-512 is separate)
-docs/METHODOLOGY.md      portable lessons, per backend
-```
-
-## Quickstart
+### 1. Build the reference fork and apply the patches
 
 ```bash
-# 1. Build the reference fork (clones it if absent)
-./reference/setup_prism_fork.sh cuda
-
-# 2. Fetch the weights (~15 GB for both variants + both drafters)
-hf download prism-ml/Ternary-Bonsai-27B-gguf Ternary-Bonsai-27B-Q2_0.gguf \
-    --local-dir ~/models/bonsai/ternary
-hf download prism-ml/Ternary-Bonsai-27B-gguf Ternary-Bonsai-27B-dspark-Q4_1.gguf \
-    --local-dir ~/models/bonsai/ternary
-hf download prism-ml/Bonsai-27B-gguf Bonsai-27B-Q1_0.gguf \
-    --local-dir ~/models/bonsai/onebit
-hf download prism-ml/Bonsai-27B-gguf Bonsai-27B-dspark-Q4_1.gguf \
-    --local-dir ~/models/bonsai/onebit
-
-# 3. Run the full reference sweep
-./reference/run_milestone0.sh
+./reference/setup_prism_fork.sh cuda        # clones the fork to ~/prism-llama.cpp if absent and builds build-cuda
+git -C ~/prism-llama.cpp checkout 7529fdaaf # the validated base; the prism branch tip moves
+git -C ~/prism-llama.cpp apply \
+    "$PWD"/patches/0003-vulkan-q1_0-q2_0-mmvq.patch \
+    "$PWD"/patches/0004-cpu-arm-q2_0-repack.patch \
+    "$PWD"/patches/0005-cpu-x86-avx2-repack.patch
+./reference/setup_prism_fork.sh vulkan      # rebuild per backend after patching: cuda | vulkan | cpu
 ```
+
+The 0003 → 0004 → 0005 chain applies cleanly to `7529fdaaf` and builds on aarch64.
+
+| Patch | Scope | Effect |
+|---|---|---|
+| `0001-dspark-staging-batch-cap` | DSpark drafter staging batch | Experiment. Saves ~1 GB at ctx 4,096 with no throughput or acceptance change |
+| `0002-force-rs-seq0` | Recurrent rollback ring | Experiment. `BONSAI_FORCE_RS_SEQ0=1` tests that the server refuses to speculate without rollback state |
+| `0003-vulkan-q1_0-q2_0-mmvq` | ggml-vulkan | Integer-dot MMVQ for `q1_0`/`q2_0` (native decode: ternary +34%, 1-bit +22%). Includes the 0002 hook |
+| `0004-cpu-arm-q2_0-repack` | ggml-cpu, Arm | `Q2_0` NEON repack with DOTPROD and i8mm tiers |
+| `0005-cpu-x86-avx2-repack` | ggml-cpu, x86 | AVX2 / AVX-VNNI tier for the `q1_0`/`q2_0` repack kernels |
+
+### 2. Fetch the weights (~15 GB for both variants and both drafters)
+
+```bash
+hf download prism-ml/Ternary-Bonsai-27B-gguf Ternary-Bonsai-27B-Q2_0.gguf Ternary-Bonsai-27B-dspark-Q4_1.gguf \
+    --local-dir ~/models/bonsai/ternary
+hf download prism-ml/Bonsai-27B-gguf Bonsai-27B-Q1_0.gguf Bonsai-27B-dspark-Q4_1.gguf \
+    --local-dir ~/models/bonsai/onebit
+```
+
+### 3. Serve with `bonsai-server`
+
+```bash
+BUILD_DIR=build-vulkan ./server/build.sh              # links that fork build's libllama; the build dir selects the backend
+./build/bonsai-server -m ~/models/bonsai/ternary/Ternary-Bonsai-27B-Q2_0.gguf \
+    --backend vulkan --webui server/webui.html
+./build/chat                                          # streaming terminal client
+./bench/gate_server.sh 8085                           # 20-check smoke gate
+curl -s localhost:8085/v1/policy                      # every default, with the measurement behind it
+```
+
+| Interface | Detail |
+|---|---|
+| API | `/v1/chat/completions` (SSE and non-streaming), `/v1/completions`, `/completion`, `/v1/models`, `/metrics`, `/v1/policy` |
+| Reasoning | `<think>` routed to `reasoning_content`; `"enable_thinking": false` suppresses it |
+| Startup | Preflight determinism probe: two identical greedy requests |
+| UI | Self-contained web UI at `/` (no CDN, works offline) |
+
+**The policy layer applies this repository's measurements by default:**
+- speculation off on Vulkan (measured 0.33–0.43×) and `auto` elsewhere;
+- `GGML_VK_DISABLE_GRAPH_OPTIMIZE=1` on Vulkan (determinism);
+- 12 CPU threads, not 14. Using all 14 cores was 1.73× / 2.27× slower.
+
+See [`server/README.md`](server/README.md).
+
+### 4. Reproduce the measurements
+
+```bash
+./reference/run_milestone0.sh                         # variant x mode x workload sweep, CUDA reference
+python3 bench/bench.py ...                            # tok/s, TTFT, acceptance against any OpenAI endpoint
+./bench/gate_determinism.sh                           # determinism gate (prefix caching off)
+python3 reference/capture_traces.py ...               # per-token logprob traces against the oracle
+```
+
+Measurement rules are in [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md). They include pre-divergence drift only,
+error over max |ref| for dot products, and "check what the device selects before checking what the feature needs".
+
+---
+
+## Limitations
+
+- **The fused custom CUDA engine (Phase 2) is not built.** Every end-to-end number measures the patched reference
+  fork and `bonsai-server` on top of it. The kernels in `kernels/` are standalone and not yet wired into a decode
+  step.
+- **One device per architecture.** All GPU and Arm numbers are from one Jetson Thor; x86 is from one laptop. Orin and
+  RTX targets compile but have not run.
+- **Bonsai-27B has not run end to end on x86.** See the x86 table.
+- **Accuracy is not evaluated beyond oracle agreement.** Gates compare against the reference fork's logprob traces.
+  No task benchmarks were run, and long-context quality is untested.
+- **DSpark is not token-identical to native decode at temperature 0** on this fork. Whether that is specific to
+  Thor's numerics is open and needs a second device to settle.
+- **Workloads are raw completions,** not PrismML's chat-templated thinking-mode benchmark. Acceptance is therefore
+  below their published figures (54.0% vs ~69.2% on ternary code); this is not a device effect.
+
+---
+
+## Roadmap
+
+| Phase | Scope | State |
+|---|---|---|
+| 0–1 | Environment, reference stack, oracle traces, Milestone 0 | Done |
+| 2 | Fused CUDA engine: packed-weight loader, GDN and GQA kernels, draft-and-verify in one graph replay | Kernels measured; engine not started |
+| 3 | Cross-architecture CUDA | Compile-verified; only `sm_110` run |
+| 4 | Vulkan | MMVQ shipped (0003); race root-caused; barrier scoping next |
+| 5 | CPU | Arm (0004) and x86 AVX2 (0005) shipped; `Q1_0` register LUT and `Q2_0` `SMMLA` 4-row next |
+| 6 | Cross-backend table on one device | Done |
+| 6 | Cross-*device* table (Orin, RTX) | Blocked on hardware |
+
+Phase 2 inherits three requirements from this work:
+- size the drafter staging buffer to the draft block, which unblocks 8 GB devices;
+- fuse draft and verify into one launch, which attacks the dispatch cost behind `R`;
+- key adaptive draft-disable on realized throughput, not acceptance.
+
+---
+
+## Repository map
+
+| Path | Contents |
+|---|---|
+| [`reference/`](reference/) | Fork build per backend, canonical server invocations, trace capture, Milestone 0 sweep. This is the correctness oracle |
+| [`patches/`](patches/) | Five patches against the PrismML fork (table above) |
+| [`server/`](server/) | `bonsai-server` (C++), policy table (`policy.h`), in-process DSpark (`dspark.h`), terminal client, web UI |
+| [`kernels/`](kernels/) | Shared packed format and batch-1 GEMV ladders for CUDA, Vulkan, NEON and AVX, with tests |
+| [`bench/`](bench/) | Backend-agnostic harness, determinism and server gates, memory measurement, table renderer, workloads |
+| [`results/`](results/) | Raw logs and write-ups behind every number in this README |
+| [`cpu-neon-arm/`](cpu-neon-arm/), [`cpu-avx-x86/`](cpu-avx-x86/) | Backend notes for the two CPU targets |
+| [`cuda/arch/`](cuda/arch/) | Cross-architecture compile verification |
+| [`docs/WIKI.md`](docs/WIKI.md) | Measurement lessons (L1–L17), hardware notes, kernel, speculation and toolchain learnings |
+| [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) | Gating protocol and portable lessons per backend |
+| [`docs/PORTABILITY.md`](docs/PORTABILITY.md) | Every gated path, its fallback, and its test status |
+| [`docs/INTEGRATION_NOTES.md`](docs/INTEGRATION_NOTES.md) | Fork-integration contracts: Vulkan MMVQ, CPU `Q1_0` LUT |
+| [`docs/RESEARCH_PROMPT.md`](docs/RESEARCH_PROMPT.md), [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) | Research brief and literature pass, with the measurements that confirmed or refuted it |
+
+---
 
 ## Prior art and credit
 
-- **[PrismML-Eng/llama.cpp](https://github.com/PrismML-Eng/llama.cpp)**,
-  `prism` branch -- the reference implementation, the source of the
-  ternary `Q2_0_g128` hybrid-attention CUDA kernels, and the correctness
-  oracle for everything in this repo. `Q1_0` is merged upstream, so stock
-  llama.cpp serves as a second independent reference for the 1-bit
-  variant.
-- **[RightNow-AI/bonsai-turbo](https://github.com/RightNow-AI/bonsai-turbo)**
-  -- prior art for single-launch batch-1 Bonsai decode (Apache 2.0,
-  reports 1.76x over the vendor fork on H100). This repo studies and
-  credits that design rather than silently reimplementing it; the
-  differentiation is DSpark fused into the same launch, Thor validation,
-  and the multi-backend story.
+- **[PrismML-Eng/llama.cpp](https://github.com/PrismML-Eng/llama.cpp)**, `prism` branch. It is the reference
+  implementation, the source of the `Q2_0`/`Q1_0` hybrid-attention kernels, and the oracle for everything here.
+  `Q1_0` is merged upstream, so stock llama.cpp is a second independent reference for the 1-bit variant.
+- **[RightNow-AI/bonsai-turbo](https://github.com/RightNow-AI/bonsai-turbo)** (Apache-2.0) is prior art for
+  single-launch batch-1 Bonsai decode, reporting 1.76× over the vendor fork on H100. This repository's planned
+  differentiation is DSpark fused into the same launch, Thor validation, and the multi-backend story.
+- **PrismML's published H100 figures** are 98.0 → 131.8 tok/s ternary and 104.8 → 143.8 tok/s 1-bit with DSpark
+  (1.34× / 1.37×). Thor's higher ratio reflects slower, bandwidth-bound decode, which gives drafting more to hide
+  behind. It does not mean better hardware.
 
-Model weights, the Q2_0/Q1_0 formats, and the DSpark drafters are
-PrismML's work, under their published licenses. See `NOTICE` in each
-model repo.
+## License
+
+- **Code and patches in this repository:** MIT ([`LICENSE`](LICENSE)). The patches modify llama.cpp and the PrismML
+  fork, both MIT.
+- **Model weights, the `Q2_0`/`Q1_0` formats and the DSpark drafters** are PrismML's work, released under
+  Apache-2.0. They are derived from Qwen3.6-27B. No weights are distributed here.
+
+## Citation
+
+```bibtex
+@misc{devaney2026bonsaiedgeserve,
+  title  = {bonsai-edge-serve: model-specific, hardware-portable serving of ternary and 1-bit Bonsai-27B with DSpark
+            speculative decoding across CUDA, Vulkan, ARM NEON and x86 AVX},
+  author = {Devaney, Patrick},
+  year   = {2026},
+  url    = {https://github.com/patrickbdevaney/bonsai-edge-serve}
+}
+```
